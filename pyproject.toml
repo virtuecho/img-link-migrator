@@ -1,0 +1,21 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "img-link-migrator"
+version = "0.1.0"
+description = "Standalone GUI and CLI for migrating Markdown image links to ImgBB"
+readme = "README.md"
+requires-python = ">=3.9"
+license = { file = "LICENSE" }
+authors = [
+  { name = "virtuecho" }
+]
+dependencies = []
+
+[project.scripts]
+img-link-migrator = "img_link_migrator:main"
+
+[tool.setuptools]
+py-modules = ["img_link_migrator"]
