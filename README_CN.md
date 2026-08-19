@@ -2,39 +2,42 @@
 
 [English](README.md) | **简体中文**
 
-这是一个完全独立的桌面与命令行工具，用于把 Markdown 文件中的外链图片迁移到
-[ImgBB](https://imgbb.com/)，并将原图片链接替换为 ImgBB 链接。
+本仓库包含两个互相独立的 ImgBB 迁移程序：
 
-项目主要面向 Obsidian vault，也可以处理任意 UTF-8 编码的 Markdown 文件或文件夹。
-项目使用通用名称 **IMG Link Migrator**，ImgBB 是目前第一个也是唯一支持的图片
-托管平台。
+1. `img_link_migrator.py`：Python Markdown GUI/CLI。
+2. `img-link-migrator.command`：处理文本和 Markdown 文件中裸图片 URL 的 macOS
+   单文件程序。
 
-## 功能
+两个程序分别拥有自己的运行环境、扫描规则、输入提示、缓存和安全行为。一套程序的
+文档不适用于另一套程序。项目使用通用名称 **IMG Link Migrator**，ImgBB 是目前
+第一个也是唯一支持的图片托管平台。
+
+## Python Markdown GUI/CLI
+
+Python 程序主要面向 Obsidian vault 和其他 UTF-8 Markdown 文件。它理解常见的
+Markdown 图片语法，不会把文件中的每一个 URL 都当作图片。
+
+### Python 程序功能
 
 - 通过原生 GUI 选择单个 Markdown 文件或整个文件夹。
 - 正式迁移前先安全扫描，不修改文件。
-- 可以迁移所有外链图片，也可以限定 `xhscdn.com` 等指定来源域名。
+- 可以迁移所有外链图片，也可以限定指定来源域名。
 - 识别 Markdown 行内图片、HTML `<img>` 标签和 Markdown 引用式图片。
 - 自动跳过 YAML 属性区、代码块、行内代码、隐藏文件夹和现有 ImgBB 链接。
-- 先下载并验证源图片，再执行上传，同时检查 ImgBB 的 32 MB 大小限制。
-- 使用 ImgBB API v1 和 `multipart/form-data` 上传图片。
-- 显示每张图片的处理进度、成功、缓存复用和失败原因。
-- 下载或上传失败时使用指数退避自动重试。
-- 可以在 GUI 中手动重试失败项目。
+- 先下载并验证源图片，同时检查 ImgBB 的 32 MB 大小限制。
+- 显示每张图片的进度、缓存复用、成功和失败详情。
+- 支持自动重试，也可以在 GUI 中手动重试失败项目。
 - 相同 URL 只处理一次；内容完全相同的图片也会去重。
-- 每张图片上传完成后立即原子替换对应 Markdown 链接，再处理下一张图片。
-- 只替换上传成功的链接，失败链接保持不变。
+- 每张图片完成后立即原子替换对应链接，再处理下一张图片。
+- 可以选择是否备份发生改动的 Markdown 文件。
 - 如果文件在扫描后被其他程序修改，会停止写入，避免覆盖新内容。
-- 使用原子写入，降低写入中断造成文件损坏的风险。
-- 可以选择是否在替换前备份发生改动的 Markdown 文件。
-- 支持取消正在进行的迁移。
 - API key 不会写入文件、报告、备份或持久化缓存。
 
-## 环境要求
+### Python 程序要求
 
 - Python 3.9 或更高版本
-- 使用 GUI 时需要 Tk
-- ImgBB API key
+- 正式迁移时需要 ImgBB API key
+- GUI 需要 Tk
 
 Homebrew 将 Tk 与 Python 分开提供。如果 GUI 提示找不到可用的 Tk，请查找并安装
 与所选 Python 解释器匹配的版本：
@@ -43,11 +46,9 @@ Homebrew 将 Tk 与 Python 分开提供。如果 GUI 提示找不到可用的 Tk
 brew search python-tk
 ```
 
-Tk 仅用于 GUI。
+Tk 仅供 GUI 使用。
 
-## 快速开始
-
-### GUI
+### Python GUI
 
 在 macOS 上双击 `launch-gui.command`，或者运行：
 
@@ -67,7 +68,7 @@ python3 img_link_migrator.py --gui
 
 来源域名留空时会处理所有外链图片。ImgBB 自身域名始终会被排除，避免重复上传。
 
-### CLI
+### Python CLI
 
 CLI 指在终端中输入命令。下面的命令需要在项目目录中执行，也就是当前目录里应该能
 看到 `img_link_migrator.py`。如果终端当前不在项目目录，可以输入 `cd`、空格，
@@ -233,7 +234,7 @@ python3 img_link_migrator.py \
   "$HOME/Documents/MyVault"
 ```
 
-### CLI 模式与参数
+#### CLI 模式与参数
 
 CLI 有三种基本写法：
 
@@ -284,7 +285,7 @@ CLI 有三种基本写法：
 python3 img_link_migrator.py --help
 ```
 
-## 备份与状态文件
+### Python 备份与状态文件
 
 备份默认开启，也可以关闭：
 
@@ -304,7 +305,7 @@ URL/图片内容缓存以及可选备份都保存在所选 vault 之外：
 持久化缓存会保存源 URL、图片 SHA-256、ImgBB 目标 URL 和过期时间，不会保存
 ImgBB API key。
 
-## 支持的 Markdown 格式
+### Python 支持的 Markdown 格式
 
 ```markdown
 ![说明文字](https://example.com/image.png)
@@ -317,7 +318,7 @@ ImgBB API key。
 
 普通链接（例如 `[网站](https://example.com/)`）不会被当作图片处理。
 
-## 安全处理流程
+### Python 安全处理流程
 
 完整迁移过程如下：
 
@@ -338,7 +339,7 @@ ImgBB API key。
 强制终止，ImgBB 上可能会暂时留下一张尚未写入 Markdown 的图片；再次运行时会复用
 本地缓存并完成替换。
 
-## ImgBB 自动删除时间
+### Python 的 ImgBB 自动删除时间
 
 默认值为 `0`，表示请求永久保存。如果希望 ImgBB 自动删除图片，可以设置
 60 到 15,552,000 秒：
@@ -352,7 +353,7 @@ python3 img_link_migrator.py \
 
 已经过期的缓存记录不会被复用。临时图片缓存也不会用于需要永久保存的迁移任务。
 
-## 开发与测试
+### Python 开发与测试
 
 运行测试：
 
@@ -368,15 +369,122 @@ python3 -m py_compile img_link_migrator.py
 
 测试使用模拟的 ImgBB 客户端，不会发起网络请求。
 
-## 当前限制
+### Python 程序限制
 
-- 只修改 UTF-8 编码的 Markdown 文件。
+- Python GUI/CLI 只修改 UTF-8 编码的 `.md` 和 `.markdown` 文件。
 - 需要浏览器登录状态才能访问的源图片可能无法下载。对于小红书 CDN，程序会自动把
   小红书网站设置为 HTTP Referer，这可以处理许多公开图片链接。
 - URL 解析主要支持 Obsidian 和 Markdown 的常见图片语法。自定义插件生成的非标准
   语法可能无法识别。
-- 程序不会删除 ImgBB 上的图片。
-- 当前支持的图片托管平台为 ImgBB。
+- Python 程序不会删除 ImgBB 上的图片。
+
+## macOS 独立单文件工具
+
+`img-link-migrator.command` 是所有程序逻辑都包含在一个文件中的完整 zsh 程序。
+可以把它复制或剪切到仓库之外独立运行；运行时不会读取或启动
+`img_link_migrator.py`。
+
+### 单文件工具的处理范围
+
+- 接受一个 `.txt`、`.md` 或 `.markdown` 文件，或者一个文件夹。
+- 递归搜索文件夹，同时跳过隐藏文件和隐藏目录。
+- 直接扫描文件字节，不检测或转换文本编码。
+- 查找支持文件中任何位置出现的 `http://` 和 `https://` URL。
+- 按来源域名筛选 URL；默认域名是 `xhscdn.com` 及其全部子域名。
+- 始终排除现有 ImgBB URL。
+- 下载每个选中的 URL，并排除非图片内容以及超过 32 MB 的图片。
+- 每次下载和上传最多尝试四次，等待时间自动逐步延长。
+- 使用该单文件工具自己的持久化来源 URL 缓存。
+- 每张图片上传成功后，立即替换全部相同 URL，再处理下一张图片。
+
+单文件扫描器不理解 Markdown 语法结构。在 Markdown 文件中，图片语法、普通文字、
+YAML 属性区或代码块内符合来源域名的 URL 都可能被找到；下载后的图片验证会阻止
+非图片内容上传。需要 Markdown 语法识别规则时，应使用 Python 程序。
+
+### 单文件工具要求
+
+- macOS
+- ImgBB API key
+- macOS 系统自带的 `zsh`、`curl`、`plutil`、`file`、`Perl` 及相关命令行工具
+
+### 运行单文件工具
+
+双击 `img-link-migrator.command`，或者在终端运行：
+
+```bash
+./img-link-migrator.command
+```
+
+程序只会要求填写以下内容：
+
+1. 输入 ImgBB API key。本次运行中的输入内容会被隐藏。
+2. 把一个支持的文件或文件夹拖入终端，然后按回车。
+3. 选择来源域名。扫描结束后会立即开始迁移。
+
+程序显示的来源说明如下：
+
+```text
+Choose where the original image links come from:
+  Press Return to use xhscdn.com and its subdomains.
+  Or type domains separated by commas: xhscdn.com,example.com
+  Or type * to check every domain; non-image URLs are skipped.
+Your choice [xhscdn.com]:
+```
+
+| 在 `Your choice` 中输入 | 会考虑迁移哪些 URL |
+| --- | --- |
+| 不输入内容，直接按回车 | `xhscdn.com` 及其全部子域名中的 URL。 |
+| `example.com` | `example.com` 及其全部子域名中的 URL。 |
+| `xhscdn.com,example.com` | 两个所列域名及其子域名中的 URL。 |
+| `*` | 所有域名中的 URL；只有成功下载并验证为图片的内容才会上传。 |
+
+程序不会再询问是否备份，也不会再询问是否开始。显示扫描数量后，只要存在匹配 URL，
+就会立即开始处理。
+
+### 单文件工具的替换安全
+
+单文件工具不建立备份副本。每次文件更新都会先写入同一目录中的临时文件，再通过
+原子重命名安装：
+
+1. 源图片必须成功下载并上传，才会进入替换步骤。
+2. 文件必须仍与扫描时记录的版本一致。
+3. 完整的替换结果必须成功写入临时文件。
+4. 满足以上条件后，才会通过原子操作替换原路径。
+
+任何一步失败时，本次替换都不会覆盖该文件；此前已经成功完成的替换会保留在磁盘上。
+一个图片 URL 在全部匹配文件中写入完成后，程序才会处理下一张图片。
+
+单文件工具的缓存位于
+`~/Library/Application Support/IMG Link Migrator Standalone/url-map.tsv`，只包含来源
+URL 和目标 URL，不包含 API key。移动 `.command` 文件不会影响该缓存。
+
+### 单文件工具示例
+
+以下内容可以位于文本文件或 Markdown 文件中：
+
+```text
+图片
+------------------------
+1. https://sns-webpic-qc.xhscdn.com/path/to/image
+```
+
+上传成功后，只会改变 URL：
+
+```text
+图片
+------------------------
+1. https://i.ibb.co/example/image.webp
+```
+
+### 单文件工具开发检查
+
+离线自检使用临时 `.txt`、`.md` 和 `.markdown` 文件，其中包含一个不符合 UTF-8
+编码的文件，并且不会发起网络请求：
+
+```bash
+zsh -n img-link-migrator.command
+./img-link-migrator.command --self-test
+```
 
 ## 许可证
 

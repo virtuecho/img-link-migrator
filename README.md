@@ -2,44 +2,45 @@
 
 **English** | [简体中文](README_CN.md)
 
-A standalone desktop and command-line tool that migrates external images in
-Markdown files to [ImgBB](https://imgbb.com/) and updates the original image
-links.
+This repository contains two independent ImgBB migration programs:
 
-It is designed for Obsidian vaults and works with any UTF-8 Markdown file or
-folder. ImgBB is the first and currently the only supported image-hosting
-provider.
+1. A Python Markdown GUI/CLI in `img_link_migrator.py`.
+2. A self-contained macOS program in `img-link-migrator.command` for raw image
+   URLs in text and Markdown files.
 
-## Features
+Each program has its own runtime, scanning rules, prompts, cache, and safety
+behavior. The documentation for one program does not apply to the other.
+ImgBB is the first and currently the only supported image-hosting provider.
+
+## Python Markdown GUI/CLI
+
+The Python program is designed for Obsidian vaults and other UTF-8 Markdown
+files. It understands common Markdown image syntax rather than treating every
+URL as an image.
+
+### Python features
 
 - Select one Markdown file or a whole folder from a native GUI.
 - Scan safely before making changes.
-- Migrate all external image hosts, or restrict migration to selected domains
-  such as `xhscdn.com`.
+- Migrate every external image host or restrict migration to selected domains.
 - Recognize inline Markdown images, HTML `<img>` elements, and Markdown
   reference-style images.
 - Skip YAML frontmatter, fenced code blocks, inline code, hidden folders, and
   existing ImgBB links.
-- Download each source image first, validate that it is an image, and enforce
-  ImgBB's 32 MB limit.
-- Upload with ImgBB API v1 using `multipart/form-data`.
-- Show per-image progress, success, cache reuse, and failure details.
-- Retry downloads and uploads automatically with exponential backoff.
-- Retry failed items manually from the GUI.
+- Download and validate each source image and enforce ImgBB's 32 MB limit.
+- Show per-image progress, cache reuse, success, and failure details.
+- Retry automatically, with manual retry available in the GUI.
 - Deduplicate repeated URLs and identical image content.
 - Atomically replace each completed image URL before processing the next image.
-- Replace only successfully uploaded links; failed links remain unchanged.
+- Optionally back up changed Markdown files.
 - Detect files edited after scanning and avoid overwriting those changes.
-- Use atomic file writes.
-- Optionally back up every changed Markdown file before replacement.
-- Cancel a running migration.
 - Keep the API key out of files, reports, backups, and the persistent cache.
 
-## Requirements
+### Python requirements
 
 - Python 3.9 or newer
-- Tk support for the GUI
-- An ImgBB API key
+- An ImgBB API key for migration
+- Tk for the GUI
 
 Homebrew distributes Tk separately from Python. If the GUI reports that no
 working Tk installation is available, find and install the formula matching
@@ -49,11 +50,9 @@ the selected Python interpreter:
 brew search python-tk
 ```
 
-Tk is only used by the GUI.
+Tk is used only by the GUI.
 
-## Quick start
-
-### GUI
+### Python GUI
 
 On macOS, double-click `launch-gui.command`, or run:
 
@@ -74,7 +73,7 @@ Then:
 The domain field can be left empty to migrate images from every external host.
 ImgBB's own domains are always excluded.
 
-### CLI
+### Python CLI
 
 CLI commands must be run from the project directory, where
 `img_link_migrator.py` is located.
@@ -233,7 +232,7 @@ python3 img_link_migrator.py \
   "$HOME/Documents/MyVault"
 ```
 
-### CLI modes and arguments
+#### CLI modes and arguments
 
 The three command forms are:
 
@@ -278,7 +277,7 @@ no value: writing the flag enables its behavior.
 | `--report PATH` | Replace `PATH` with a JSON report location. | Write no JSON report. | `--report "./report.json"` |
 | `-h`, `--help` | Flag; enter no value after it. | Run normally. | `python3 img_link_migrator.py --help` |
 
-## Backups and state
+### Python backups and state
 
 Backups are enabled by default and can be disabled:
 
@@ -300,7 +299,7 @@ copying that backup over the corresponding original path.
 The persistent cache contains source URLs, SHA-256 image hashes, destination
 URLs, and expiration timestamps. It never contains the ImgBB API key.
 
-## Supported Markdown
+### Supported Markdown syntax
 
 ```markdown
 ![alt text](https://example.com/image.png)
@@ -314,7 +313,7 @@ URLs, and expiration timestamps. It never contains the ImgBB API key.
 Normal links such as `[website](https://example.com/)` are intentionally not
 treated as images.
 
-## Safety model
+### Python safety model
 
 The migration pipeline is:
 
@@ -341,7 +340,7 @@ terminated during that interval, ImgBB may temporarily contain an image not
 yet referenced by Markdown. The next run reuses the local cache and completes
 the replacement.
 
-## ImgBB expiration
+### Python ImgBB expiration
 
 The default expiration is `0`, which requests permanent storage. To request
 automatic deletion, use a value from 60 through 15,552,000 seconds:
@@ -355,7 +354,7 @@ python3 img_link_migrator.py \
 
 Expired cache entries are not reused.
 
-## Development
+### Python development
 
 Run the test suite:
 
@@ -363,7 +362,7 @@ Run the test suite:
 python3 -m unittest discover -s tests -v
 ```
 
-Run a syntax check:
+Run a Python syntax check:
 
 ```bash
 python3 -m py_compile img_link_migrator.py
@@ -371,15 +370,132 @@ python3 -m py_compile img_link_migrator.py
 
 The tests use a fake ImgBB client and do not perform network requests.
 
-## Current limitations
+### Python tool limitations
 
-- Only UTF-8 Markdown files are modified.
+- The Python GUI/CLI modifies only UTF-8 `.md` and `.markdown` files.
 - Source images that require an authenticated browser session may fail to
   download. Xiaohongshu CDN requests automatically include the Xiaohongshu
   website as the HTTP referrer, which is sufficient for many public links.
 - URL parsing focuses on common Obsidian and Markdown image syntax. Links
   generated by custom plugins with nonstandard syntax may not be detected.
-- The tool does not delete images from ImgBB.
+- The Python tool does not delete images from ImgBB.
+
+## Standalone single-file tool
+
+`img-link-migrator.command` is a complete zsh program contained in one file.
+It can be copied or moved out of this repository and run independently. At
+runtime it neither reads nor launches `img_link_migrator.py`.
+
+### Standalone scope
+
+- Accept one `.txt`, `.md`, or `.markdown` file, or one directory.
+- Search a directory recursively while skipping hidden files and directories.
+- Scan file bytes directly without testing or converting the text encoding.
+- Find `http://` and `https://` URLs anywhere in supported files.
+- Filter URLs by source domain; the default is `xhscdn.com` and its subdomains.
+- Always exclude existing ImgBB URLs.
+- Download each selected URL and reject content that is not an image or is
+  larger than 32 MB.
+- Retry each download and upload up to four total attempts with automatic
+  backoff.
+- Reuse its own persistent source-URL cache.
+- Immediately replace every occurrence of a successfully uploaded URL before
+  processing the next image.
+
+The standalone scanner is deliberately syntax-independent. In Markdown files,
+it can find selected-domain URLs in image syntax, plain text, frontmatter, or
+code blocks. Image validation prevents non-image downloads from being uploaded.
+Use the Python program when Markdown-aware parsing rules are needed.
+
+### Standalone requirements
+
+- macOS
+- An ImgBB API key
+- The macOS system `zsh`, `curl`, `plutil`, `file`, `Perl`, and related command
+  line tools
+
+### Run the standalone tool
+
+Double-click `img-link-migrator.command`, or run it from Terminal:
+
+```bash
+./img-link-migrator.command
+```
+
+The program asks only for the following information:
+
+1. Enter the ImgBB API key. Typing is hidden for the current run.
+2. Drag one supported file or directory into Terminal and press Return.
+3. Choose the source domains. After scanning, migration starts immediately.
+
+The source explanation displayed by the program is:
+
+```text
+Choose where the original image links come from:
+  Press Return to use xhscdn.com and its subdomains.
+  Or type domains separated by commas: xhscdn.com,example.com
+  Or type * to check every domain; non-image URLs are skipped.
+Your choice [xhscdn.com]:
+```
+
+| Input at `Your choice` | URLs considered for migration |
+| --- | --- |
+| Press Return without typing | URLs from `xhscdn.com` and any of its subdomains. |
+| `example.com` | URLs from `example.com` and its subdomains. |
+| `xhscdn.com,example.com` | URLs from either listed domain and their subdomains. |
+| `*` | URLs from every domain; only valid downloaded images are uploaded. |
+
+There is no backup question and no start-confirmation question. The scan count
+is displayed and processing begins immediately when matching URLs exist.
+
+### Standalone replacement safety
+
+The standalone tool creates no backup copies. Each individual file update is
+written to a temporary file in the same directory and then installed with an
+atomic rename:
+
+1. A source image must download and upload successfully before replacement.
+2. The file must still match the version recorded during the scan.
+3. The complete replacement must be written successfully to the temporary
+   file.
+4. Only then is the original path atomically replaced.
+
+If any of these steps fails, that replacement does not overwrite the file.
+Replacements completed earlier remain on disk. After one image URL is written
+to all matching files, the program starts the next image.
+
+The standalone cache is stored at
+`~/Library/Application Support/IMG Link Migrator Standalone/url-map.tsv`. It
+contains source and destination URLs, not the API key. Moving the `.command`
+file does not affect this cache.
+
+### Standalone example
+
+This content works in both text and Markdown files:
+
+```text
+Images
+------------------------
+1. https://sns-webpic-qc.xhscdn.com/path/to/image
+```
+
+After a successful upload, only the URL changes:
+
+```text
+Images
+------------------------
+1. https://i.ibb.co/example/image.webp
+```
+
+### Standalone development check
+
+The self-test uses local temporary `.txt`, `.md`, and `.markdown` files,
+including a file that is not valid UTF-8. It performs no network request:
+
+```bash
+zsh -n img-link-migrator.command
+./img-link-migrator.command --self-test
+```
 
 ## License
 
