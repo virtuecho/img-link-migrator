@@ -5,13 +5,12 @@ setopt PIPE_FAIL
 setopt EXTENDED_GLOB
 
 readonly APP_NAME="IMG Link Migrator Standalone"
-readonly APP_VERSION="0.5.0"
+readonly APP_VERSION="0.6.0"
 readonly USER_AGENT="IMG-Link-Migrator-Standalone/${APP_VERSION}"
 readonly MAX_IMAGE_BYTES=33554432
 readonly DEFAULT_HOST="xhscdn.com"
 readonly MAX_ATTEMPTS=4
 readonly DEFAULT_PARALLEL_TRANSFERS=3
-readonly MAX_PARALLEL_TRANSFERS=10
 readonly UPLOADS_PER_MINUTE=50
 readonly DEFAULT_UPLOAD_INTERVAL_SECONDS=1.21
 readonly UPLOAD_RATE_COOLDOWN_SECONDS=60
@@ -36,6 +35,7 @@ downloaded_mime="application/octet-stream"
 downloaded_filename="image.bin"
 state_dir="${HOME}/Library/Application Support/${APP_NAME}"
 cache_file="${state_dir}/url-map.tsv"
+content_cache_file="${state_dir}/content-map.tsv"
 work_dir=""
 migration_stop_requested=false
 migration_stop_announced=false
@@ -224,6 +224,69 @@ record_cache() {
   print -r -- "${cache_namespace}"$'\t'"${original}"$'\t'"${migrated}" >> "$cache_file"
 }
 
+lookup_content_cache() {
+  local wanted_digest="$1"
+  local namespace
+  local digest
+  local migrated
+
+  [[ -f "$content_cache_file" ]] || return 1
+  while IFS=$'\t' read -r namespace digest migrated; do
+    if [[ "$namespace" == "$cache_namespace" && \
+      "$digest" == "$wanted_digest" && -n "$migrated" ]]; then
+      print -r -- "$migrated"
+      return 0
+    fi
+  done < "$content_cache_file"
+  return 1
+}
+
+acquire_content_lock() {
+  local digest="$1"
+  local lock_dir="${work_dir}/content-${digest}.lock"
+
+  while ! /bin/mkdir -- "$lock_dir" 2>/dev/null; do
+    /bin/sleep 0.02
+  done
+}
+
+release_content_lock() {
+  local digest="$1"
+  /bin/rmdir -- "${work_dir}/content-${digest}.lock" 2>/dev/null || true
+}
+
+acquire_content_cache_write_lock() {
+  local lock_dir="${work_dir}/content-cache-write.lock"
+
+  while ! /bin/mkdir -- "$lock_dir" 2>/dev/null; do
+    /bin/sleep 0.02
+  done
+}
+
+release_content_cache_write_lock() {
+  /bin/rmdir -- "${work_dir}/content-cache-write.lock" 2>/dev/null || true
+}
+
+record_content_cache() {
+  local digest="$1"
+  local migrated="$2"
+  local write_status=0
+
+  /bin/mkdir -p -- "$state_dir" || return 1
+  acquire_content_cache_write_lock || return 1
+  /usr/bin/touch "$content_cache_file" || write_status=1
+  if (( write_status == 0 )); then
+    /bin/chmod 600 "$content_cache_file" || write_status=1
+  fi
+  if (( write_status == 0 )) && \
+    ! lookup_content_cache "$digest" >/dev/null; then
+    print -r -- "${cache_namespace}"$'\t'"${digest}"$'\t'"${migrated}" \
+      >> "$content_cache_file" || write_status=1
+  fi
+  release_content_cache_write_lock
+  return "$write_status"
+}
+
 sleep_before_retry() {
   local attempt="$1"
   local delay=$(( 1 << (attempt - 1) ))
@@ -335,6 +398,35 @@ is_upload_rate_error() {
   local message="${1:l}"
   [[ "$message" == *"flood"* || "$message" == *"rate limit"* || \
     "$message" == *"too many requests"* ]]
+}
+
+is_duplicate_upload_error() {
+  local message="${1:l}"
+  [[ "$message" == *"duplicated upload"* || \
+    "$message" == *"duplicate upload"* ]]
+}
+
+chevereto_response_url() {
+  local response_file="$1"
+  local status_code
+  local migrated_url
+  local error_message
+
+  status_code="$(
+    /usr/bin/plutil -extract status_code raw -o - "$response_file" 2>/dev/null
+  )"
+  migrated_url="$(
+    /usr/bin/plutil -extract image.url raw -o - "$response_file" 2>/dev/null
+  )"
+  error_message="$(
+    /usr/bin/plutil -extract error.message raw -o - "$response_file" 2>/dev/null
+  )"
+  [[ "$migrated_url" == http://* || "$migrated_url" == https://* ]] || return 1
+  if [[ "$status_code" == "200" ]] || is_duplicate_upload_error "$error_message"; then
+    print -r -- "$migrated_url"
+    return 0
+  fi
+  return 1
 }
 
 handle_upload_rate_error() {
@@ -468,7 +560,6 @@ upload_chevereto() {
   local response_file="$2"
   local attempt
   local curl_status
-  local status_code
   local migrated_url
   local error_message
   local rate_limited
@@ -493,21 +584,18 @@ upload_chevereto() {
     curl_status=$?
 
     if (( curl_status == 0 )); then
-      status_code="$(
-        /usr/bin/plutil -extract status_code raw -o - "$response_file" 2>/dev/null
-      )"
-      if [[ "$status_code" == "200" ]]; then
-        migrated_url="$(
-          /usr/bin/plutil -extract image.url raw -o - "$response_file" 2>/dev/null
-        )"
-        if [[ "$migrated_url" == http://* || "$migrated_url" == https://* ]]; then
-          print -r -- "$migrated_url"
-          return 0
-        fi
-      fi
+      migrated_url="$(chevereto_response_url "$response_file")"
       error_message="$(
         /usr/bin/plutil -extract error.message raw -o - "$response_file" 2>/dev/null
       )"
+      if [[ -n "$migrated_url" ]]; then
+        if is_duplicate_upload_error "$error_message"; then
+          log_transfer_error \
+            "PicGo.net: duplicate content found; reusing the existing image URL."
+        fi
+        print -r -- "$migrated_url"
+        return 0
+      fi
       if [[ -n "$error_message" ]]; then
         log_transfer_error "PicGo.net: $error_message"
         if handle_upload_rate_error "$error_message"; then
@@ -550,7 +638,10 @@ transfer_url_worker() {
   local result_file="$4"
   local image_file="${work_dir}/transfer-${item_index}.image"
   local response_file="${work_dir}/transfer-${item_index}.json"
+  local digest
+  local duplicate_message
   local migrated_url
+  local transfer_status="uploaded"
 
   transfer_label="[${item_index}/${total}]"
 
@@ -567,14 +658,43 @@ transfer_url_worker() {
     return 1
   fi
 
+  digest="$(file_hash "$image_file")" || {
+    write_transfer_result "$result_file" "download_failed"
+    return 1
+  }
+  acquire_content_lock "$digest" || {
+    write_transfer_result "$result_file" "worker_failed"
+    return 1
+  }
+  migrated_url="$(lookup_content_cache "$digest")"
+  if [[ -n "$migrated_url" ]]; then
+    print -r -- "[${item_index}/${total}] Reusing identical content: $migrated_url"
+    release_content_lock "$digest"
+    write_transfer_result "$result_file" "reused" "$migrated_url"
+    return $?
+  fi
+
   print -r -- "[${item_index}/${total}] Uploading: $url"
   migrated_url="$(upload_image "$image_file" "$response_file")"
   if [[ -z "$migrated_url" ]]; then
+    release_content_lock "$digest"
     write_transfer_result "$result_file" "upload_failed"
     return 1
   fi
 
-  write_transfer_result "$result_file" "uploaded" "$migrated_url"
+  if [[ "$provider" == "chevereto" ]]; then
+    duplicate_message="$(
+      /usr/bin/plutil -extract error.message raw -o - "$response_file" 2>/dev/null
+    )"
+    if is_duplicate_upload_error "$duplicate_message"; then
+      transfer_status="reused"
+    fi
+  fi
+  if ! record_content_cache "$digest" "$migrated_url"; then
+    log_transfer_error "Warning: could not record the content cache."
+  fi
+  release_content_lock "$digest"
+  write_transfer_result "$result_file" "$transfer_status" "$migrated_url"
 }
 
 replace_url_in_file() {
@@ -634,25 +754,10 @@ replace_url_in_indexed_files() {
   [[ "$write_failed" == false ]]
 }
 
-set_parallel_transfers() {
-  local requested="$1"
-
-  if [[ -z "$requested" ]]; then
-    parallel_transfers=$DEFAULT_PARALLEL_TRANSFERS
-    return 0
-  fi
-  if [[ ! "$requested" =~ '^([1-9]|10)$' ]]; then
-    fail "Parallel transfers must be a number from 1 to 10."
-    return 1
-  fi
-  parallel_transfers=$requested
-}
-
 prompt_settings() {
   local service_input
   local target_input
   local source_input
-  local parallel_input
   local host
 
   print -r -- "${APP_NAME} ${APP_VERSION}"
@@ -723,12 +828,6 @@ prompt_settings() {
     done
   fi
 
-  print
-  print -r -- "Choose how many image transfers can run at once:"
-  print -r -- "  Press Return to use 3."
-  print -r -- "  Or enter a number from 1 to 10."
-  read -r "parallel_input?Parallel transfers [3]: "
-  set_parallel_transfers "$parallel_input" || return 1
 }
 
 show_scan_summary() {
@@ -743,7 +842,6 @@ show_scan_summary() {
   print -r -- "Matching URL references: ${reference_count}"
   print -r -- "Unique matching URLs: ${#urls}"
   print -r -- "Upload service: $provider_name"
-  print -r -- "Parallel transfers: $parallel_transfers"
   print -r -- "Upload request limit: ${UPLOADS_PER_MINUTE} per minute"
   print -r -- "Selected domains: $source_description"
   print
@@ -832,12 +930,18 @@ run_migration() {
       IFS=$'\t' read -r result_status migrated_url < "$result_file"
       url="${job_urls[$job_id]}"
 
-      if [[ "$result_status" == "uploaded" && -n "$migrated_url" ]]; then
+      if [[ ( "$result_status" == "uploaded" || "$result_status" == "reused" ) && \
+        -n "$migrated_url" ]]; then
         if ! record_cache "$url" "$migrated_url"; then
           print -u2 -r -- "  Warning: could not record the migration cache."
         fi
-        (( uploaded += 1 ))
-        print -r -- "[${job_id}/${total}] Uploaded: $migrated_url"
+        if [[ "$result_status" == "reused" ]]; then
+          (( reused += 1 ))
+          print -r -- "[${job_id}/${total}] Reused: $migrated_url"
+        else
+          (( uploaded += 1 ))
+          print -r -- "[${job_id}/${total}] Uploaded: $migrated_url"
+        fi
         if ! replace_url_in_indexed_files "$url" "$migrated_url"; then
           (( failed += 1 ))
         fi
@@ -884,6 +988,8 @@ self_test() {
   local text_file
   local markdown_file
   local long_markdown_file
+  local duplicate_response_file
+  local content_digest
   local file
   local file_index
   local url
@@ -902,14 +1008,7 @@ self_test() {
   local third_url='https://media.xhscdn.com/path/third-image'
   local fourth_url='https://media.xhscdn.com/path/fourth-image'
 
-  set_parallel_transfers "" || return 1
   (( parallel_transfers == 3 )) || return 1
-  set_parallel_transfers "10" || return 1
-  (( parallel_transfers == 10 )) || return 1
-  ! set_parallel_transfers "0" 2>/dev/null || return 1
-  ! set_parallel_transfers "11" 2>/dev/null || return 1
-  ! set_parallel_transfers "three" 2>/dev/null || return 1
-  parallel_transfers=3
 
   test_dir="$(/usr/bin/mktemp -d "${TMPDIR:-/tmp}/img-link-migrator-self-test.XXXXXX")" || return 1
   work_dir="$test_dir"
@@ -947,6 +1046,12 @@ self_test() {
   /bin/rm -f -- "${work_dir}"/rate-slot-*.time \
     "${work_dir}/rate-slots.time" "${work_dir}/next-upload-time"
   upload_interval_seconds=$DEFAULT_UPLOAD_INTERVAL_SECONDS
+  duplicate_response_file="${test_dir}/duplicate-response.json"
+  print -r -- \
+    '{"status_code":400,"error":{"message":"Duplicated upload"},"image":{"url":"https://origin.picgo.net/existing.webp"}}' \
+    > "$duplicate_response_file"
+  [[ "$(chevereto_response_url "$duplicate_response_file")" == \
+    "https://origin.picgo.net/existing.webp" ]] || return 1
   text_file="${test_dir}/images.txt"
   markdown_file="${test_dir}/note.md"
   long_markdown_file="${test_dir}/note.markdown"
@@ -975,6 +1080,15 @@ self_test() {
 
   state_dir="${test_dir}/state"
   cache_file="${state_dir}/url-map.tsv"
+  content_cache_file="${state_dir}/content-map.tsv"
+  content_digest="$(file_hash "$text_file")" || return 1
+  record_content_cache "$content_digest" \
+    "https://origin.picgo.net/content-cache.webp" || return 1
+  [[ "$(lookup_content_cache "$content_digest")" == \
+    "https://origin.picgo.net/content-cache.webp" ]] || return 1
+  cache_namespace="imgbb"
+  ! lookup_content_cache "$content_digest" >/dev/null || return 1
+  cache_namespace="chevereto:${CHEVERETO_URL}"
   test_transfer_mode=true
   test_transfer_delay=0.2
   (

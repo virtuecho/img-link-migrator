@@ -32,7 +32,7 @@ from typing import Callable, Dict, Iterable, List, Optional, Sequence, Set, Tupl
 
 
 APP_NAME = "IMG Link Migrator"
-APP_VERSION = "0.5.0"
+APP_VERSION = "0.6.0"
 ENV_IMGBB_API_KEY = "IMGBB_API_KEY"
 ENV_CHEVERETO_API_KEY = "CHEVERETO_API_KEY"
 DEFAULT_PROVIDER = "chevereto"
@@ -93,6 +93,11 @@ def _is_upload_rate_error(message: str) -> bool:
         marker in normalized
         for marker in ("flood", "rate limit", "too many requests")
     )
+
+
+def _is_duplicate_upload_error(message: str) -> bool:
+    normalized = message.lower()
+    return "duplicated upload" in normalized or "duplicate upload" in normalized
 
 
 @dataclasses.dataclass(frozen=True)
@@ -807,7 +812,20 @@ class CheveretoClient(BaseUploadClient):
             fallback = "Chevereto {} returned HTTP {}.".format(action, exc.code)
             try:
                 payload = json.loads(exc.read().decode("utf-8", errors="replace"))
-                fallback += " {}".format(self._error_message(payload, ""))
+                error_message = self._error_message(payload, "")
+                fallback += " {}".format(error_message)
+                if isinstance(payload, dict) and _is_duplicate_upload_error(
+                    error_message
+                ):
+                    image_payload = payload.get("image")
+                    existing_url = (
+                        image_payload.get("url")
+                        if isinstance(image_payload, dict)
+                        else None
+                    )
+                    parsed = urllib.parse.urlsplit(existing_url or "")
+                    if parsed.scheme in {"http", "https"} and parsed.hostname:
+                        return payload
             except (ValueError, AttributeError):
                 pass
             raise MigrationError(fallback.strip()) from None
@@ -849,10 +867,15 @@ class CheveretoClient(BaseUploadClient):
                 method="POST",
             )
             payload = self._request_json(request, "upload")
-            if payload.get("error") or payload.get("status_code") not in {200, "200"}:
+            error_message = self._error_message(payload, "unexpected response")
+            duplicate_upload = _is_duplicate_upload_error(error_message)
+            if (
+                payload.get("error")
+                or payload.get("status_code") not in {200, "200"}
+            ) and not duplicate_upload:
                 raise MigrationError(
                     "Chevereto upload failed: {}".format(
-                        self._error_message(payload, "unexpected response")
+                        error_message
                     )
                 )
             image_payload = payload.get("image")

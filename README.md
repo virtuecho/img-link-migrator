@@ -39,6 +39,11 @@ same limit. If a provider reports flooding, a rate limit, or too many requests,
 all uploads pause for 60 seconds before automatic retry continues. Downloads,
 cache hits, and local file writes do not consume upload slots.
 
+When PicGo.net reports `Duplicated upload` and includes a valid existing image
+URL, both programs reuse that URL as a successful result. The content hash is
+then cached so later source URLs containing the same image bytes skip the
+upload request entirely.
+
 The GUI provides a PicGo.net preset. In the Python CLI, selecting `chevereto`
 uses the `X-API-Key` header and uploads the image in the `source` multipart
 field to `/api/1/upload`. A custom Chevereto site selected with
@@ -457,7 +462,11 @@ runtime it neither reads nor launches `img_link_migrator.py`.
 - Filter URLs by source domain; the default is `xhscdn.com` and its subdomains.
 - Build a URL-to-files index during the initial scan so a completed upload only
   checks files that originally contained that URL.
+- Cache both source URLs and downloaded-image SHA-256 hashes. A known identical
+  image reuses its existing destination URL without another upload request.
 - Upload to either ImgBB or PicGo.net using Chevereto API v1.
+- Treat a PicGo.net `Duplicated upload` response containing a valid image URL as
+  successful reuse instead of failure.
 - Exclude existing links belonging to the selected destination.
 - Download each selected URL and reject content that is not an image or is
   larger than 32 MB.
@@ -465,9 +474,9 @@ runtime it neither reads nor launches `img_link_migrator.py`.
   backoff.
 - Limit both providers to no more than 50 upload requests per minute, including
   retries, and apply a shared 60-second cooldown after a rate-limit response.
-- Run a selectable number of download/upload transfers in parallel: default 3,
-  minimum 1, maximum 10. Progress lines retain each URL's item number even
-  when completion order differs.
+- Internally overlap up to three downloads to avoid wasting upload slots while
+  waiting for source servers. Upload requests still use one shared schedule.
+  There is no worker-count question.
 - Reuse its own persistent source-URL cache.
 - As each transfer succeeds, serialize its file updates and immediately replace
   every indexed occurrence with atomic file writes.
@@ -497,9 +506,7 @@ The program asks only for the following information:
 1. Keep the default PicGo.net service or select ImgBB.
 2. Enter that service's API key. Typing is hidden for the current run.
 3. Drag one supported file or directory into Terminal and press Return.
-4. Choose the source domains.
-5. Choose 1–10 parallel transfers, or press Return for the default 3. After
-   scanning, migration starts immediately.
+4. Choose the source domains. After scanning, migration starts immediately.
 
 The upload-service prompt is:
 
@@ -535,26 +542,11 @@ Your choice [xhscdn.com]:
 | `xhscdn.com,example.com` | URLs from either listed domain and their subdomains. |
 | `*` | URLs from every domain; only valid downloaded images are uploaded. |
 
-The parallel-transfer prompt is:
-
-```text
-Choose how many image transfers can run at once:
-  Press Return to use 3.
-  Or enter a number from 1 to 10.
-Parallel transfers [3]:
-```
-
-| Input | Parallel behavior |
-| --- | --- |
-| Press Return | Run up to 3 transfers at once. |
-| `1` | Use serial transfer while retaining the same atomic-write behavior. |
-| `2`–`10` | Run up to the selected number of transfers at once. |
-
-Parallel transfers do not bypass the upload limit. Downloads can overlap, but
-all workers share one upload schedule. PicGo.net and ImgBB upload request starts
-are spaced 1.21 seconds apart, keeping the rate below 50 requests per minute;
-retries use the same schedule. A rate-limit response pauses all upload workers
-for 60 seconds and then retry continues automatically.
+There is no worker-count question. The tool automatically overlaps up to three
+downloads, but all workers share one upload schedule. PicGo.net and ImgBB
+upload request starts are spaced 1.21 seconds apart, keeping the rate below 50
+requests per minute; retries use the same schedule. A rate-limit response
+pauses all upload workers for 60 seconds and then retry continues automatically.
 
 There is no backup question and no start-confirmation question. The scan count
 is displayed and processing begins immediately when matching URLs exist.
@@ -585,10 +577,11 @@ waits for the active group, writes every successful
 result atomically, and then exits. Depending on retries and network timeouts,
 this graceful stop may take some time.
 
-The standalone cache is stored at
-`~/Library/Application Support/IMG Link Migrator Standalone/url-map.tsv`. It
-contains provider namespaces plus source and destination URLs, not API keys.
-Moving the `.command` file does not affect this cache.
+The standalone cache directory is
+`~/Library/Application Support/IMG Link Migrator Standalone/`. `url-map.tsv`
+stores source-to-destination URL mappings; `content-map.tsv` stores provider
+namespaces, SHA-256 hashes, and destination URLs. Neither file contains API
+keys. Moving the `.command` file does not affect these caches.
 
 ### Standalone example
 
@@ -611,10 +604,10 @@ Images
 ### Standalone development check
 
 The self-test uses local temporary `.txt`, `.md`, and `.markdown` files,
-including a file that is not valid UTF-8. It verifies the 1–10 range, a
-three-worker queue, shared upload pacing and cooldown, graceful interruption,
-cache resume, indexed replacement, and atomic writes without making network
-requests:
+including a file that is not valid UTF-8. It verifies the internal three-worker
+queue, content-hash reuse, duplicate-response reuse, shared upload pacing and
+cooldown, graceful interruption, cache resume, indexed replacement, and atomic
+writes without making network requests:
 
 ```bash
 zsh -n img-link-migrator.command

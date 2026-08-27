@@ -1,3 +1,4 @@
+import io
 import json
 import pathlib
 import re
@@ -405,6 +406,41 @@ class MigrationTests(unittest.TestCase):
 
 
 class CheveretoClientTests(unittest.TestCase):
+    def test_duplicate_upload_reuses_the_existing_image_url(self):
+        payload = {
+            "status_code": 400,
+            "error": {"message": "Duplicated upload", "code": 101},
+            "image": {
+                "url": "https://origin.picgo.net/existing.webp",
+            },
+        }
+        http_error = migrator.urllib.error.HTTPError(
+            "https://www.picgo.net/api/1/upload",
+            400,
+            "Bad Request",
+            {},
+            io.BytesIO(json.dumps(payload).encode("utf-8")),
+        )
+        client = migrator.CheveretoClient(
+            "fake-chevereto-key",
+            retries=0,
+            cancel_event=ImmediateEvent(),
+        )
+
+        with mock.patch.object(
+            migrator.urllib.request,
+            "urlopen",
+            side_effect=http_error,
+        ):
+            result = client.upload(
+                b"\x89PNG\r\n\x1a\nimage",
+                "image/png",
+                "example.png",
+                "https://source.example/example.png",
+            )
+
+        self.assertEqual(result, "https://origin.picgo.net/existing.webp")
+
     def test_upload_uses_chevereto_multipart_contract(self):
         responses = [
             FakeHTTPResponse(
