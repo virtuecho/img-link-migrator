@@ -455,9 +455,11 @@ runtime it neither reads nor launches `img_link_migrator.py`.
   larger than 32 MB.
 - Retry each download and upload up to four total attempts with automatic
   backoff.
+- Run up to three download/upload transfers in parallel. Progress lines retain
+  each URL's item number even when completion order differs.
 - Reuse its own persistent source-URL cache.
-- Immediately replace every occurrence of a successfully uploaded URL before
-  processing the next image.
+- As each transfer succeeds, serialize its file updates and immediately replace
+  every indexed occurrence with atomic file writes.
 
 The standalone scanner is deliberately syntax-independent. In Markdown files,
 it can find selected-domain URLs in image syntax, plain text, frontmatter, or
@@ -523,6 +525,10 @@ Your choice [xhscdn.com]:
 There is no backup question and no start-confirmation question. The scan count
 is displayed and processing begins immediately when matching URLs exist.
 
+During migration, `Downloading`, `Uploading`, `Uploaded`, and failure messages
+include the item's `[current/total]` number. The completion order can differ
+because up to three transfers run at once.
+
 ### Standalone replacement safety
 
 The standalone tool creates no backup copies. Each individual file update is
@@ -536,8 +542,14 @@ atomic rename:
 4. Only then is the original path atomically replaced.
 
 If any of these steps fails, that replacement does not overwrite the file.
-Replacements completed earlier remain on disk. After one image URL is written
-to all matching files, the program starts the next image.
+Replacements completed earlier remain on disk. File updates are performed by
+the parent process one at a time, so concurrent transfers never write the same
+file simultaneously.
+
+Pressing `Control-C` once stops the queue from starting new transfers. The tool
+waits for the active group of up to three transfers, writes every successful
+result atomically, and then exits. Depending on retries and network timeouts,
+this graceful stop may take some time.
 
 The standalone cache is stored at
 `~/Library/Application Support/IMG Link Migrator Standalone/url-map.tsv`. It
@@ -565,7 +577,9 @@ Images
 ### Standalone development check
 
 The self-test uses local temporary `.txt`, `.md`, and `.markdown` files,
-including a file that is not valid UTF-8. It performs no network request:
+including a file that is not valid UTF-8. It verifies the three-worker queue,
+graceful interruption, cache resume, indexed replacement, and atomic writes
+without making network requests:
 
 ```bash
 zsh -n img-link-migrator.command

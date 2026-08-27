@@ -32,7 +32,7 @@ from typing import Callable, Dict, Iterable, List, Optional, Sequence, Set, Tupl
 
 
 APP_NAME = "IMG Link Migrator"
-APP_VERSION = "0.2.0"
+APP_VERSION = "0.3.0"
 ENV_IMGBB_API_KEY = "IMGBB_API_KEY"
 ENV_CHEVERETO_API_KEY = "CHEVERETO_API_KEY"
 DEFAULT_PROVIDER = "imgbb"

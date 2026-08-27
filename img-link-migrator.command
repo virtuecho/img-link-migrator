@@ -5,11 +5,12 @@ setopt PIPE_FAIL
 setopt EXTENDED_GLOB
 
 readonly APP_NAME="IMG Link Migrator Standalone"
-readonly APP_VERSION="0.2.0"
+readonly APP_VERSION="0.3.0"
 readonly USER_AGENT="IMG-Link-Migrator-Standalone/${APP_VERSION}"
 readonly MAX_IMAGE_BYTES=33554432
 readonly DEFAULT_HOST="xhscdn.com"
 readonly MAX_ATTEMPTS=4
+readonly MAX_PARALLEL_TRANSFERS=3
 readonly CHEVERETO_URL="https://www.picgo.net"
 
 typeset -a target_files
@@ -30,6 +31,11 @@ downloaded_filename="image.bin"
 state_dir="${HOME}/Library/Application Support/${APP_NAME}"
 cache_file="${state_dir}/url-map.tsv"
 work_dir=""
+migration_stop_requested=false
+migration_stop_announced=false
+test_transfer_mode=false
+test_transfer_delay=0
+transfer_label=""
 
 cleanup() {
   if [[ -n "$work_dir" && -d "$work_dir" ]]; then
@@ -43,6 +49,18 @@ trap 'exit 130' INT TERM
 fail() {
   print -u2 -r -- "Error: $1"
   return 1
+}
+
+request_migration_stop() {
+  migration_stop_requested=true
+  if [[ "$migration_stop_announced" == false ]]; then
+    migration_stop_announced=true
+    print -u2 -r -- "Stop requested. Finishing active transfers and their file updates..."
+  fi
+}
+
+log_transfer_error() {
+  print -u2 -r -- "${transfer_label:+${transfer_label} }$1"
 }
 
 pause_before_exit() {
@@ -203,7 +221,7 @@ record_cache() {
 sleep_before_retry() {
   local attempt="$1"
   local delay=$(( 1 << (attempt - 1) ))
-  print -u2 -r -- "  Retrying in ${delay} second(s)..."
+  log_transfer_error "Retrying in ${delay} second(s)..."
   /bin/sleep "$delay"
 }
 
@@ -251,9 +269,9 @@ download_image() {
         downloaded_filename="image.${extension}"
         return 0
       fi
-      print -u2 -r -- "  Downloaded content is not a valid image or exceeds 32 MB."
+      log_transfer_error "Downloaded content is not a valid image or exceeds 32 MB."
     else
-      print -u2 -r -- "  Download attempt ${attempt} failed."
+      log_transfer_error "Download attempt ${attempt} failed."
     fi
 
     (( attempt < MAX_ATTEMPTS )) && sleep_before_retry "$attempt"
@@ -301,9 +319,9 @@ upload_imgbb() {
       error_message="$(
         /usr/bin/plutil -extract error.message raw -o - "$response_file" 2>/dev/null
       )"
-      [[ -n "$error_message" ]] && print -u2 -r -- "  ImgBB: $error_message"
+      [[ -n "$error_message" ]] && log_transfer_error "ImgBB: $error_message"
     else
-      print -u2 -r -- "  Upload attempt ${attempt} failed."
+      log_transfer_error "Upload attempt ${attempt} failed."
     fi
 
     (( attempt < MAX_ATTEMPTS )) && sleep_before_retry "$attempt"
@@ -353,9 +371,9 @@ upload_chevereto() {
       error_message="$(
         /usr/bin/plutil -extract error.message raw -o - "$response_file" 2>/dev/null
       )"
-      [[ -n "$error_message" ]] && print -u2 -r -- "  PicGo.net: $error_message"
+      [[ -n "$error_message" ]] && log_transfer_error "PicGo.net: $error_message"
     else
-      print -u2 -r -- "  Upload attempt ${attempt} failed."
+      log_transfer_error "Upload attempt ${attempt} failed."
     fi
 
     (( attempt < MAX_ATTEMPTS )) && sleep_before_retry "$attempt"
@@ -369,6 +387,50 @@ upload_image() {
   else
     upload_chevereto "$@"
   fi
+}
+
+write_transfer_result() {
+  local result_file="$1"
+  local transfer_status="$2"
+  local migrated_url="${3:-}"
+  local temp_result="${result_file}.tmp"
+
+  print -r -- "${transfer_status}"$'\t'"${migrated_url}" > "$temp_result" || return 1
+  /bin/mv -f -- "$temp_result" "$result_file"
+}
+
+transfer_url_worker() {
+  local url="$1"
+  local item_index="$2"
+  local total="$3"
+  local result_file="$4"
+  local image_file="${work_dir}/transfer-${item_index}.image"
+  local response_file="${work_dir}/transfer-${item_index}.json"
+  local migrated_url
+
+  transfer_label="[${item_index}/${total}]"
+
+  if [[ "$test_transfer_mode" == true ]]; then
+    /bin/sleep "$test_transfer_delay"
+    print -r -- "[${item_index}/${total}] Uploading: $url"
+    write_transfer_result \
+      "$result_file" "uploaded" "https://test.invalid/image-${item_index}"
+    return $?
+  fi
+
+  if ! download_image "$url" "$image_file"; then
+    write_transfer_result "$result_file" "download_failed"
+    return 1
+  fi
+
+  print -r -- "[${item_index}/${total}] Uploading: $url"
+  migrated_url="$(upload_image "$image_file" "$response_file")"
+  if [[ -z "$migrated_url" ]]; then
+    write_transfer_result "$result_file" "upload_failed"
+    return 1
+  fi
+
+  write_transfer_result "$result_file" "uploaded" "$migrated_url"
 }
 
 replace_url_in_file() {
@@ -408,6 +470,24 @@ replace_url_in_file() {
 
   fingerprints[$file]="$(file_hash "$file")"
   print -r -- "  Updated: $file"
+}
+
+replace_url_in_indexed_files() {
+  local original_url="$1"
+  local migrated_url="$2"
+  local file
+  local file_index
+  local -a matching_file_indexes
+  local write_failed=false
+
+  matching_file_indexes=(${=url_file_indexes[$original_url]})
+  for file_index in "${matching_file_indexes[@]}"; do
+    file="${target_files[$file_index]}"
+    if ! replace_url_in_file "$file" "$original_url" "$migrated_url"; then
+      write_failed=true
+    fi
+  done
+  [[ "$write_failed" == false ]]
 }
 
 prompt_settings() {
@@ -497,6 +577,7 @@ show_scan_summary() {
   print -r -- "Matching URL references: ${reference_count}"
   print -r -- "Unique matching URLs: ${#urls}"
   print -r -- "Upload service: $provider_name"
+  print -r -- "Parallel transfers: $MAX_PARALLEL_TRANSFERS"
   print -r -- "Selected domains: $source_description"
   print
 
@@ -509,66 +590,126 @@ show_scan_summary() {
 }
 
 run_migration() {
-  local index=0
+  local next_index=1
+  local item_index
+  local total=${#urls}
   local uploaded=0
   local reused=0
   local failed=0
+  local run_status=0
   local url
   local migrated_url
-  local image_file="${work_dir}/image.bin"
-  local response_file="${work_dir}/response.json"
-  local file
-  local file_index
-  local -a matching_file_indexes
-  local write_failed
+  local result_file
+  local result_status
+  local job_id
+  local job_pid
+  local completed_any
+  local -a active_job_ids
+  local -A job_pids
+  local -A job_urls
+  local -A job_results
 
   /bin/mkdir -p -- "$state_dir" || return 1
   /bin/chmod 700 "$state_dir"
 
-  for url in "${urls[@]}"; do
-    (( index += 1 ))
-    print
-    print -r -- "[${index}/${#urls}] $url"
+  migration_stop_requested=false
+  migration_stop_announced=false
+  trap request_migration_stop INT TERM
 
-    migrated_url="$(lookup_cache "$url")"
-    if [[ -n "$migrated_url" ]]; then
-      (( reused += 1 ))
-      print -r -- "  Reused cached URL: $migrated_url"
-    else
-      if ! download_image "$url" "$image_file"; then
-        (( failed += 1 ))
-        print -u2 -r -- "  Failed: download"
+  while (( next_index <= total || ${#active_job_ids} > 0 )); do
+    while [[ "$migration_stop_requested" == false ]] && \
+      (( next_index <= total && ${#active_job_ids} < MAX_PARALLEL_TRANSFERS )); do
+      item_index=$next_index
+      url="${urls[$item_index]}"
+      (( next_index += 1 ))
+
+      migrated_url="$(lookup_cache "$url")"
+      if [[ -n "$migrated_url" ]]; then
+        print -r -- "[${item_index}/${total}] Cached: $url"
+        print -r -- "  Reused cached URL: $migrated_url"
+        (( reused += 1 ))
+        if ! replace_url_in_indexed_files "$url" "$migrated_url"; then
+          (( failed += 1 ))
+        fi
         continue
       fi
 
-      migrated_url="$(upload_image "$image_file" "$response_file")"
-      if [[ -z "$migrated_url" ]]; then
-        (( failed += 1 ))
-        print -u2 -r -- "  Failed: upload"
-        continue
-      fi
+      print -r -- "[${item_index}/${total}] Downloading: $url"
+      result_file="${work_dir}/transfer-${item_index}.result"
+      (
+        trap '' INT TERM
+        transfer_url_worker "$url" "$item_index" "$total" "$result_file"
+        job_status=$?
+        if [[ ! -f "$result_file" ]]; then
+          write_transfer_result "$result_file" "worker_failed"
+        fi
+        exit "$job_status"
+      ) &
+      job_pid=$!
+      active_job_ids+=("$item_index")
+      job_pids[$item_index]="$job_pid"
+      job_urls[$item_index]="$url"
+      job_results[$item_index]="$result_file"
+    done
 
-      if ! record_cache "$url" "$migrated_url"; then
-        print -u2 -r -- "  Warning: could not record the migration cache."
-      fi
-      (( uploaded += 1 ))
-      print -r -- "  Uploaded: $migrated_url"
+    if (( ${#active_job_ids} == 0 )); then
+      break
     fi
 
-    write_failed=false
-    matching_file_indexes=(${=url_file_indexes[$url]})
-    for file_index in "${matching_file_indexes[@]}"; do
-      file="${target_files[$file_index]}"
-      if ! replace_url_in_file "$file" "$url" "$migrated_url"; then
-        write_failed=true
+    completed_any=false
+    for job_id in "${active_job_ids[@]}"; do
+      result_file="${job_results[$job_id]}"
+      [[ -f "$result_file" ]] || continue
+
+      wait "${job_pids[$job_id]}" 2>/dev/null
+      IFS=$'\t' read -r result_status migrated_url < "$result_file"
+      url="${job_urls[$job_id]}"
+
+      if [[ "$result_status" == "uploaded" && -n "$migrated_url" ]]; then
+        if ! record_cache "$url" "$migrated_url"; then
+          print -u2 -r -- "  Warning: could not record the migration cache."
+        fi
+        (( uploaded += 1 ))
+        print -r -- "[${job_id}/${total}] Uploaded: $migrated_url"
+        if ! replace_url_in_indexed_files "$url" "$migrated_url"; then
+          (( failed += 1 ))
+        fi
+      else
+        (( failed += 1 ))
+        case "$result_status" in
+          download_failed)
+            print -u2 -r -- "[${job_id}/${total}] Failed: download"
+            ;;
+          upload_failed)
+            print -u2 -r -- "[${job_id}/${total}] Failed: upload"
+            ;;
+          *)
+            print -u2 -r -- "[${job_id}/${total}] Failed: transfer worker"
+            ;;
+        esac
       fi
+
+      active_job_ids=("${(@)active_job_ids:#${job_id}}")
+      unset "job_pids[$job_id]" "job_urls[$job_id]" "job_results[$job_id]"
+      completed_any=true
     done
-    [[ "$write_failed" == true ]] && (( failed += 1 ))
+
+    if [[ "$completed_any" == false ]]; then
+      /bin/sleep 0.1
+    fi
   done
 
   print
-  print -r -- "Finished: uploaded ${uploaded}, reused ${reused}, failed ${failed}."
-  (( failed == 0 ))
+  if [[ "$migration_stop_requested" == true ]]; then
+    print -r -- "Stopped after active transfers completed: uploaded ${uploaded}, reused ${reused}, failed ${failed}."
+    run_status=130
+  else
+    print -r -- "Finished: uploaded ${uploaded}, reused ${reused}, failed ${failed}."
+    (( failed == 0 )) || run_status=1
+  fi
+
+  trap 'exit 130' INT TERM
+  return "$run_status"
 }
 
 self_test() {
@@ -578,10 +719,17 @@ self_test() {
   local long_markdown_file
   local file
   local file_index
+  local url
+  local migrated_url
+  local migration_status=0
+  local signal_pid
+  local -i cached_count=0
+  local -i remaining_count=0
   local -a indexed_files
   local old_url='https://cdn.xhscdn.com/path/image'
   local second_url='http://sns-webpic-qc.xhscdn.com/path/image!variant'
-  local new_url='https://i.ibb.co/test/image.webp'
+  local third_url='https://media.xhscdn.com/path/third-image'
+  local fourth_url='https://media.xhscdn.com/path/fourth-image'
 
   test_dir="$(/usr/bin/mktemp -d "${TMPDIR:-/tmp}/img-link-migrator-self-test.XXXXXX")" || return 1
   work_dir="$test_dir"
@@ -591,10 +739,12 @@ self_test() {
   /usr/bin/printf '\3771. %s\n2. %s\n' "$old_url" "$second_url" > "$text_file"
   {
     print -r -- "![image]($old_url)"
+    print -r -- "3. $third_url"
     print -r -- '4. https://example.com/not-selected.jpg'
   } > "$markdown_file"
   {
     print -r -- "5. $old_url"
+    print -r -- "6. $fourth_url"
     print -r -- '5. https://i.ibb.co/already/migrated.webp'
   } > "$long_markdown_file"
 
@@ -603,20 +753,63 @@ self_test() {
   all_hosts=false
   collect_target_files || return 1
   collect_urls || return 1
-  (( ${#target_files} == 3 && reference_count == 4 && ${#urls} == 2 )) || return 1
+  (( ${#target_files} == 3 && reference_count == 6 && ${#urls} == 4 )) || return 1
   indexed_files=(${=url_file_indexes[$old_url]})
   (( ${#indexed_files} == 3 )) || return 1
-  for file_index in "${indexed_files[@]}"; do
-    file="${target_files[$file_index]}"
-    replace_url_in_file "$file" "$old_url" "$new_url" || return 1
-    ! /usr/bin/grep -aFq -- "$old_url" "$file" || return 1
-  done
   indexed_files=(${=url_file_indexes[$second_url]})
   (( ${#indexed_files} == 1 )) || return 1
-  /usr/bin/grep -aFq -- "$new_url" "$text_file" || return 1
-  /usr/bin/grep -aFq -- "$second_url" "$text_file" || return 1
-  /usr/bin/grep -aFq -- "$new_url" "$markdown_file" || return 1
-  /usr/bin/grep -aFq -- "$new_url" "$long_markdown_file" || return 1
+
+  state_dir="${test_dir}/state"
+  cache_file="${state_dir}/url-map.tsv"
+  test_transfer_mode=true
+  test_transfer_delay=0.2
+  (
+    /bin/sleep 0.05
+    /bin/kill -INT $$
+  ) &
+  signal_pid=$!
+  run_migration
+  migration_status=$?
+  wait "$signal_pid" 2>/dev/null
+  test_transfer_mode=false
+  test_transfer_delay=0
+  (( migration_status == 130 )) || return 1
+
+  for url in "${urls[@]}"; do
+    migrated_url="$(lookup_cache "$url")"
+    indexed_files=(${=url_file_indexes[$url]})
+    if [[ -n "$migrated_url" ]]; then
+      (( cached_count += 1 ))
+      for file_index in "${indexed_files[@]}"; do
+        file="${target_files[$file_index]}"
+        ! /usr/bin/grep -aFq -- "$url" "$file" || return 1
+      done
+    else
+      (( remaining_count += 1 ))
+      for file_index in "${indexed_files[@]}"; do
+        file="${target_files[$file_index]}"
+        if /usr/bin/grep -aFq -- "$url" "$file"; then
+          break
+        fi
+      done
+      /usr/bin/grep -aFq -- "$url" "$file" || return 1
+    fi
+  done
+  (( cached_count == 3 && remaining_count == 1 )) || return 1
+
+  test_transfer_mode=true
+  run_migration || return 1
+  test_transfer_mode=false
+  for url in "${urls[@]}"; do
+    migrated_url="$(lookup_cache "$url")"
+    [[ -n "$migrated_url" ]] || return 1
+    indexed_files=(${=url_file_indexes[$url]})
+    for file_index in "${indexed_files[@]}"; do
+      file="${target_files[$file_index]}"
+      ! /usr/bin/grep -aFq -- "$url" "$file" || return 1
+    done
+  done
+
   provider="chevereto"
   host_is_destination "cdn.picgo.net" || return 1
   ! host_is_destination "i.ibb.co" || return 1
@@ -643,11 +836,15 @@ main() {
   if ! show_scan_summary; then
     return 0
   fi
-  run_migration || exit_code=2
+  run_migration
+  exit_code=$?
+  if (( exit_code != 0 && exit_code != 130 )); then
+    exit_code=2
+  fi
   return "$exit_code"
 }
 
 main "$@"
 exit_code=$?
-pause_before_exit
+(( exit_code == 130 )) || pause_before_exit
 exit "$exit_code"
