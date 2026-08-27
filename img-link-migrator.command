@@ -16,6 +16,7 @@ typeset -a target_files
 typeset -a urls
 typeset -a source_hosts
 typeset -A fingerprints
+typeset -A url_file_indexes
 typeset -i reference_count=0
 
 api_key=""
@@ -136,17 +137,25 @@ collect_target_files() {
 collect_urls() {
   local file
   local url
+  local indexed_files
+  local -i file_index=0
 
   urls=()
   fingerprints=()
+  url_file_indexes=()
   reference_count=0
 
   for file in "${target_files[@]}"; do
+    (( file_index += 1 ))
     fingerprints[$file]="$(file_hash "$file")"
     while IFS= read -r url; do
       url="$(trim_url_suffix "$url")"
       if url_is_selected "$url"; then
         (( reference_count += 1 ))
+        indexed_files="${url_file_indexes[$url]-}"
+        if [[ " $indexed_files " != *" $file_index "* ]]; then
+          url_file_indexes[$url]="${indexed_files:+${indexed_files} }${file_index}"
+        fi
         if (( ${urls[(Ie)$url]} == 0 )); then
           urls+=("$url")
         fi
@@ -509,6 +518,8 @@ run_migration() {
   local image_file="${work_dir}/image.bin"
   local response_file="${work_dir}/response.json"
   local file
+  local file_index
+  local -a matching_file_indexes
   local write_failed
 
   /bin/mkdir -p -- "$state_dir" || return 1
@@ -545,7 +556,9 @@ run_migration() {
     fi
 
     write_failed=false
-    for file in "${target_files[@]}"; do
+    matching_file_indexes=(${=url_file_indexes[$url]})
+    for file_index in "${matching_file_indexes[@]}"; do
+      file="${target_files[$file_index]}"
       if ! replace_url_in_file "$file" "$url" "$migrated_url"; then
         write_failed=true
       fi
@@ -564,6 +577,8 @@ self_test() {
   local markdown_file
   local long_markdown_file
   local file
+  local file_index
+  local -a indexed_files
   local old_url='https://cdn.xhscdn.com/path/image'
   local second_url='http://sns-webpic-qc.xhscdn.com/path/image!variant'
   local new_url='https://i.ibb.co/test/image.webp'
@@ -589,10 +604,15 @@ self_test() {
   collect_target_files || return 1
   collect_urls || return 1
   (( ${#target_files} == 3 && reference_count == 4 && ${#urls} == 2 )) || return 1
-  for file in "${target_files[@]}"; do
+  indexed_files=(${=url_file_indexes[$old_url]})
+  (( ${#indexed_files} == 3 )) || return 1
+  for file_index in "${indexed_files[@]}"; do
+    file="${target_files[$file_index]}"
     replace_url_in_file "$file" "$old_url" "$new_url" || return 1
     ! /usr/bin/grep -aFq -- "$old_url" "$file" || return 1
   done
+  indexed_files=(${=url_file_indexes[$second_url]})
+  (( ${#indexed_files} == 1 )) || return 1
   /usr/bin/grep -aFq -- "$new_url" "$text_file" || return 1
   /usr/bin/grep -aFq -- "$second_url" "$text_file" || return 1
   /usr/bin/grep -aFq -- "$new_url" "$markdown_file" || return 1

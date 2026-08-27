@@ -438,6 +438,7 @@ python3 -m py_compile img_link_migrator.py
 - 直接扫描文件字节，不检测或转换文本编码。
 - 查找支持文件中任何位置出现的 `http://` 和 `https://` URL。
 - 按来源域名筛选 URL；默认域名是 `xhscdn.com` 及其全部子域名。
+- 初次扫描时建立 URL 到文件的索引；上传完成后只检查原本包含该 URL 的文件。
 - 可以上传到 ImgBB，或者使用 Chevereto API v1 上传到 PicGo.net。
 - 排除属于当前所选目标平台的现有链接。
 - 下载每个选中的 URL，并排除非图片内容以及超过 32 MB 的图片。

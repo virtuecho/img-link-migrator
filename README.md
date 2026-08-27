@@ -447,6 +447,8 @@ runtime it neither reads nor launches `img_link_migrator.py`.
 - Scan file bytes directly without testing or converting the text encoding.
 - Find `http://` and `https://` URLs anywhere in supported files.
 - Filter URLs by source domain; the default is `xhscdn.com` and its subdomains.
+- Build a URL-to-files index during the initial scan so a completed upload only
+  checks files that originally contained that URL.
 - Upload to either ImgBB or PicGo.net using Chevereto API v1.
 - Exclude existing links belonging to the selected destination.
 - Download each selected URL and reject content that is not an image or is
