@@ -32,13 +32,16 @@ from typing import Callable, Dict, Iterable, List, Optional, Sequence, Set, Tupl
 
 
 APP_NAME = "IMG Link Migrator"
-APP_VERSION = "0.4.0"
+APP_VERSION = "0.5.0"
 ENV_IMGBB_API_KEY = "IMGBB_API_KEY"
 ENV_CHEVERETO_API_KEY = "CHEVERETO_API_KEY"
 DEFAULT_PROVIDER = "chevereto"
 IMGBB_CACHE_NAMESPACE = "imgbb"
 DEFAULT_CHEVERETO_URL = "https://www.picgo.net"
 MAX_IMAGE_BYTES = 32 * 1024 * 1024
+UPLOADS_PER_MINUTE = 50
+MIN_UPLOAD_INTERVAL_SECONDS = 1.21
+UPLOAD_RATE_COOLDOWN_SECONDS = 60.0
 IMGBB_EXCLUDED_HOSTS = ("ibb.co", "i.ibb.co", "api.imgbb.com")
 DEFAULT_EXCLUDED_HOSTS = IMGBB_EXCLUDED_HOSTS
 USER_AGENT = "IMG-Link-Migrator/{}".format(APP_VERSION)
@@ -50,6 +53,46 @@ class MigrationError(RuntimeError):
 
 class CancelledError(MigrationError):
     """Raised when the user cancels a run."""
+
+
+class UploadRateLimiter:
+    """Serialize upload request starts across all workers for one run."""
+
+    def __init__(
+        self,
+        interval_seconds: float = MIN_UPLOAD_INTERVAL_SECONDS,
+        clock: Callable[[], float] = time.monotonic,
+    ) -> None:
+        self.interval_seconds = interval_seconds
+        self._clock = clock
+        self._lock = threading.Lock()
+        self._next_allowed = 0.0
+
+    def wait(self, cancel_event: threading.Event) -> None:
+        while True:
+            with self._lock:
+                now = self._clock()
+                delay = self._next_allowed - now
+                if delay <= 0:
+                    self._next_allowed = now + self.interval_seconds
+                    return
+            if cancel_event.wait(delay):
+                raise CancelledError("Task cancelled.")
+
+    def defer(self, seconds: float) -> None:
+        with self._lock:
+            self._next_allowed = max(
+                self._next_allowed,
+                self._clock() + seconds,
+            )
+
+
+def _is_upload_rate_error(message: str) -> bool:
+    normalized = message.lower()
+    return any(
+        marker in normalized
+        for marker in ("flood", "rate limit", "too many requests")
+    )
 
 
 @dataclasses.dataclass(frozen=True)
@@ -557,6 +600,7 @@ class BaseUploadClient:
         self.retries = retries
         self.callback = callback
         self.cancel_event = cancel_event or threading.Event()
+        self.upload_rate_limiter = UploadRateLimiter()
         if not self.api_key:
             raise MigrationError(
                 "Missing {} API key. Set {} or enter it in the GUI.".format(
@@ -588,7 +632,11 @@ class BaseUploadClient:
                 last_error = exc
                 if attempt > self.retries:
                     break
-                delay = min(8.0, 2 ** (attempt - 1)) + random.random() * 0.25
+                if stage == "Upload" and _is_upload_rate_error(str(exc)):
+                    delay = UPLOAD_RATE_COOLDOWN_SECONDS
+                    self.upload_rate_limiter.defer(delay)
+                else:
+                    delay = min(8.0, 2 ** (attempt - 1)) + random.random() * 0.25
                 _notify(
                     self.callback,
                     kind="retry",
@@ -664,6 +712,7 @@ class ImgBBClient(BaseUploadClient):
 
     def upload(self, data: bytes, content_type: str, filename: str, url: str) -> str:
         def action() -> str:
+            self.upload_rate_limiter.wait(self.cancel_event)
             boundary = "----ImgBBMigrator{}".format(uuid.uuid4().hex)
             body = _multipart_file_body(
                 boundary, "image", data, content_type, filename
@@ -774,6 +823,7 @@ class CheveretoClient(BaseUploadClient):
 
     def upload(self, data: bytes, content_type: str, filename: str, url: str) -> str:
         def action() -> str:
+            self.upload_rate_limiter.wait(self.cancel_event)
             boundary = "----IMGLinkMigrator{}".format(uuid.uuid4().hex)
             fields: List[Tuple[str, str]] = [("format", "json")]
             if self.expiration:

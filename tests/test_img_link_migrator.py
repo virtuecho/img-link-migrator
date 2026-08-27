@@ -41,6 +41,17 @@ class ImmediateEvent:
         return False
 
 
+class AdvancingEvent(ImmediateEvent):
+    def __init__(self):
+        self.now = 100.0
+        self.waits = []
+
+    def wait(self, timeout):
+        self.waits.append(timeout)
+        self.now += timeout
+        return False
+
+
 class FakeHTTPResponse:
     def __init__(self, payload):
         self.payload = json.dumps(payload).encode("utf-8")
@@ -87,6 +98,23 @@ class SourcePolicyTests(unittest.TestCase):
         self.assertEqual(
             migrator.StateStore._cache_key("source", "imgbb"),
             "source",
+        )
+
+    def test_upload_rate_limit_is_shared_by_both_provider_clients(self):
+        self.assertEqual(migrator.UPLOADS_PER_MINUTE, 50)
+        self.assertGreaterEqual(
+            migrator.MIN_UPLOAD_INTERVAL_SECONDS,
+            60 / migrator.UPLOADS_PER_MINUTE,
+        )
+        imgbb = migrator.ImgBBClient(
+            "fake-key", retries=0, cancel_event=ImmediateEvent()
+        )
+        chevereto = migrator.CheveretoClient(
+            "fake-key", retries=0, cancel_event=ImmediateEvent()
+        )
+        self.assertEqual(
+            imgbb.upload_rate_limiter.interval_seconds,
+            chevereto.upload_rate_limiter.interval_seconds,
         )
 
 
@@ -158,6 +186,51 @@ source: "https://meta.example/cover.png"
 
 
 class MigrationTests(unittest.TestCase):
+    def test_upload_rate_limiter_spaces_requests_and_applies_cooldown(self):
+        event = AdvancingEvent()
+        limiter = migrator.UploadRateLimiter(
+            interval_seconds=1.21,
+            clock=lambda: event.now,
+        )
+
+        limiter.wait(event)
+        limiter.wait(event)
+        limiter.wait(event)
+        self.assertEqual(len(event.waits), 2)
+        self.assertAlmostEqual(event.waits[0], 1.21)
+        self.assertAlmostEqual(event.waits[1], 1.21)
+
+        limiter.defer(60.0)
+        limiter.wait(event)
+        self.assertAlmostEqual(event.waits[-1], 60.0)
+
+    def test_flooding_retry_uses_sixty_second_cooldown(self):
+        events = []
+        cancel_event = AdvancingEvent()
+        client = migrator.ImgBBClient(
+            "fake-key",
+            retries=1,
+            callback=events.append,
+            cancel_event=cancel_event,
+        )
+        attempts = []
+
+        def flooding_once():
+            attempts.append(True)
+            if len(attempts) == 1:
+                raise migrator.MigrationError(
+                    "Flooding detected. You can only upload 50 images per minute"
+                )
+            return "ok"
+
+        self.assertEqual(
+            client._retry(flooding_once, "Upload", "https://example.com/x.png"),
+            "ok",
+        )
+        self.assertEqual(len(attempts), 2)
+        self.assertEqual(events[0]["delay"], 60.0)
+        self.assertAlmostEqual(cancel_event.waits[0], 60.0)
+
     def test_each_uploaded_url_is_written_before_the_next_download(self):
         with tempfile.TemporaryDirectory() as raw_dir:
             root = pathlib.Path(raw_dir)

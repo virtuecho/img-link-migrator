@@ -32,6 +32,13 @@ URL as an image.
 Provider caches are isolated. Switching the destination never reuses a URL or
 content-hash cache entry created for another provider.
 
+Both providers use the same per-run upload-request limit: no more than 50
+requests per minute, with request starts spaced 1.21 seconds apart. Automatic
+upload retries pass through the same limiter and therefore count toward the
+same limit. If a provider reports flooding, a rate limit, or too many requests,
+all uploads pause for 60 seconds before automatic retry continues. Downloads,
+cache hits, and local file writes do not consume upload slots.
+
 The GUI provides a PicGo.net preset. In the Python CLI, selecting `chevereto`
 uses the `X-API-Key` header and uploads the image in the `source` multipart
 field to `/api/1/upload`. A custom Chevereto site selected with
@@ -49,6 +56,7 @@ field to `/api/1/upload`. A custom Chevereto site selected with
 - Download and validate each source image and enforce a 32 MB local safety
   limit.
 - Show per-image progress, cache reuse, success, and failure details.
+- Limit both providers to no more than 50 upload requests per minute.
 - Retry automatically, with manual retry available in the GUI.
 - Deduplicate repeated URLs and identical image content.
 - Atomically replace each completed image URL before processing the next image.
@@ -455,6 +463,8 @@ runtime it neither reads nor launches `img_link_migrator.py`.
   larger than 32 MB.
 - Retry each download and upload up to four total attempts with automatic
   backoff.
+- Limit both providers to no more than 50 upload requests per minute, including
+  retries, and apply a shared 60-second cooldown after a rate-limit response.
 - Run a selectable number of download/upload transfers in parallel: default 3,
   minimum 1, maximum 10. Progress lines retain each URL's item number even
   when completion order differs.
@@ -540,6 +550,12 @@ Parallel transfers [3]:
 | `1` | Use serial transfer while retaining the same atomic-write behavior. |
 | `2`–`10` | Run up to the selected number of transfers at once. |
 
+Parallel transfers do not bypass the upload limit. Downloads can overlap, but
+all workers share one upload schedule. PicGo.net and ImgBB upload request starts
+are spaced 1.21 seconds apart, keeping the rate below 50 requests per minute;
+retries use the same schedule. A rate-limit response pauses all upload workers
+for 60 seconds and then retry continues automatically.
+
 There is no backup question and no start-confirmation question. The scan count
 is displayed and processing begins immediately when matching URLs exist.
 
@@ -596,8 +612,9 @@ Images
 
 The self-test uses local temporary `.txt`, `.md`, and `.markdown` files,
 including a file that is not valid UTF-8. It verifies the 1–10 range, a
-three-worker queue, graceful interruption, cache resume, indexed replacement,
-and atomic writes without making network requests:
+three-worker queue, shared upload pacing and cooldown, graceful interruption,
+cache resume, indexed replacement, and atomic writes without making network
+requests:
 
 ```bash
 zsh -n img-link-migrator.command

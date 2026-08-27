@@ -5,13 +5,16 @@ setopt PIPE_FAIL
 setopt EXTENDED_GLOB
 
 readonly APP_NAME="IMG Link Migrator Standalone"
-readonly APP_VERSION="0.4.0"
+readonly APP_VERSION="0.5.0"
 readonly USER_AGENT="IMG-Link-Migrator-Standalone/${APP_VERSION}"
 readonly MAX_IMAGE_BYTES=33554432
 readonly DEFAULT_HOST="xhscdn.com"
 readonly MAX_ATTEMPTS=4
 readonly DEFAULT_PARALLEL_TRANSFERS=3
 readonly MAX_PARALLEL_TRANSFERS=10
+readonly UPLOADS_PER_MINUTE=50
+readonly DEFAULT_UPLOAD_INTERVAL_SECONDS=1.21
+readonly UPLOAD_RATE_COOLDOWN_SECONDS=60
 readonly CHEVERETO_URL="https://www.picgo.net"
 
 typeset -a target_files
@@ -28,6 +31,7 @@ provider="chevereto"
 provider_name="PicGo.net"
 cache_namespace="chevereto:${CHEVERETO_URL}"
 parallel_transfers=$DEFAULT_PARALLEL_TRANSFERS
+upload_interval_seconds=$DEFAULT_UPLOAD_INTERVAL_SECONDS
 downloaded_mime="application/octet-stream"
 downloaded_filename="image.bin"
 state_dir="${HOME}/Library/Application Support/${APP_NAME}"
@@ -227,6 +231,124 @@ sleep_before_retry() {
   /bin/sleep "$delay"
 }
 
+current_time_seconds() {
+  LC_ALL=C /usr/bin/perl -MTime::HiRes=time -e 'printf "%.6f\n", time'
+}
+
+acquire_upload_rate_lock() {
+  local lock_dir="${work_dir}/upload-rate.lock"
+
+  while ! /bin/mkdir -- "$lock_dir" 2>/dev/null; do
+    /bin/sleep 0.02
+  done
+}
+
+release_upload_rate_lock() {
+  /bin/rmdir -- "${work_dir}/upload-rate.lock" 2>/dev/null || true
+}
+
+write_next_upload_time() {
+  local value="$1"
+  local state_file="${work_dir}/next-upload-time"
+  local temp_file="${state_file}.tmp"
+
+  print -r -- "$value" > "$temp_file" || return 1
+  /bin/mv -f -- "$temp_file" "$state_file"
+}
+
+wait_for_upload_slot() {
+  local state_file="${work_dir}/next-upload-time"
+  local next_time=0
+  local now
+  local delay
+
+  acquire_upload_rate_lock || return 1
+  if [[ -f "$state_file" ]]; then
+    IFS= read -r next_time < "$state_file"
+  fi
+  now="$(current_time_seconds)" || {
+    release_upload_rate_lock
+    return 1
+  }
+  delay="$(
+    LC_ALL=C /usr/bin/perl -e '
+      my ($next, $now) = @ARGV;
+      my $delay = $next - $now;
+      printf "%.6f\n", $delay > 0 ? $delay : 0;
+    ' "$next_time" "$now"
+  )" || {
+    release_upload_rate_lock
+    return 1
+  }
+  if [[ "$delay" != "0.000000" ]]; then
+    /bin/sleep "$delay"
+  fi
+  now="$(current_time_seconds)" || {
+    release_upload_rate_lock
+    return 1
+  }
+  next_time="$(
+    LC_ALL=C /usr/bin/perl -e 'printf "%.6f\n", $ARGV[0] + $ARGV[1]' \
+      "$now" "$upload_interval_seconds"
+  )" || {
+    release_upload_rate_lock
+    return 1
+  }
+  write_next_upload_time "$next_time"
+  local write_status=$?
+  release_upload_rate_lock
+  return "$write_status"
+}
+
+defer_uploads() {
+  local seconds="$1"
+  local state_file="${work_dir}/next-upload-time"
+  local next_time=0
+  local now
+  local deferred_time
+
+  acquire_upload_rate_lock || return 1
+  if [[ -f "$state_file" ]]; then
+    IFS= read -r next_time < "$state_file"
+  fi
+  now="$(current_time_seconds)" || {
+    release_upload_rate_lock
+    return 1
+  }
+  deferred_time="$(
+    LC_ALL=C /usr/bin/perl -e '
+      my ($current, $now, $seconds) = @ARGV;
+      my $candidate = $now + $seconds;
+      printf "%.6f\n", $current > $candidate ? $current : $candidate;
+    ' "$next_time" "$now" "$seconds"
+  )" || {
+    release_upload_rate_lock
+    return 1
+  }
+  write_next_upload_time "$deferred_time"
+  local write_status=$?
+  release_upload_rate_lock
+  return "$write_status"
+}
+
+is_upload_rate_error() {
+  local message="${1:l}"
+  [[ "$message" == *"flood"* || "$message" == *"rate limit"* || \
+    "$message" == *"too many requests"* ]]
+}
+
+handle_upload_rate_error() {
+  local message="$1"
+
+  if is_upload_rate_error "$message"; then
+    log_transfer_error \
+      "Upload limit reached. Pausing all uploads for ${UPLOAD_RATE_COOLDOWN_SECONDS} seconds."
+    defer_uploads "$UPLOAD_RATE_COOLDOWN_SECONDS"
+    return 0
+  fi
+  return 1
+}
+
 download_image() {
   local url="$1"
   local output_file="$2"
@@ -289,8 +411,11 @@ upload_imgbb() {
   local success
   local migrated_url
   local error_message
+  local rate_limited
 
   for (( attempt = 1; attempt <= MAX_ATTEMPTS; attempt++ )); do
+    rate_limited=false
+    wait_for_upload_slot || return 1
     {
       print -r -- 'silent'
       print -r -- 'show-error'
@@ -321,12 +446,19 @@ upload_imgbb() {
       error_message="$(
         /usr/bin/plutil -extract error.message raw -o - "$response_file" 2>/dev/null
       )"
-      [[ -n "$error_message" ]] && log_transfer_error "ImgBB: $error_message"
+      if [[ -n "$error_message" ]]; then
+        log_transfer_error "ImgBB: $error_message"
+        if handle_upload_rate_error "$error_message"; then
+          rate_limited=true
+        fi
+      fi
     else
       log_transfer_error "Upload attempt ${attempt} failed."
     fi
 
-    (( attempt < MAX_ATTEMPTS )) && sleep_before_retry "$attempt"
+    if (( attempt < MAX_ATTEMPTS )) && [[ "$rate_limited" == false ]]; then
+      sleep_before_retry "$attempt"
+    fi
   done
   return 1
 }
@@ -339,8 +471,11 @@ upload_chevereto() {
   local status_code
   local migrated_url
   local error_message
+  local rate_limited
 
   for (( attempt = 1; attempt <= MAX_ATTEMPTS; attempt++ )); do
+    rate_limited=false
+    wait_for_upload_slot || return 1
     {
       print -r -- 'silent'
       print -r -- 'show-error'
@@ -373,12 +508,19 @@ upload_chevereto() {
       error_message="$(
         /usr/bin/plutil -extract error.message raw -o - "$response_file" 2>/dev/null
       )"
-      [[ -n "$error_message" ]] && log_transfer_error "PicGo.net: $error_message"
+      if [[ -n "$error_message" ]]; then
+        log_transfer_error "PicGo.net: $error_message"
+        if handle_upload_rate_error "$error_message"; then
+          rate_limited=true
+        fi
+      fi
     else
       log_transfer_error "Upload attempt ${attempt} failed."
     fi
 
-    (( attempt < MAX_ATTEMPTS )) && sleep_before_retry "$attempt"
+    if (( attempt < MAX_ATTEMPTS )) && [[ "$rate_limited" == false ]]; then
+      sleep_before_retry "$attempt"
+    fi
   done
   return 1
 }
@@ -602,6 +744,7 @@ show_scan_summary() {
   print -r -- "Unique matching URLs: ${#urls}"
   print -r -- "Upload service: $provider_name"
   print -r -- "Parallel transfers: $parallel_transfers"
+  print -r -- "Upload request limit: ${UPLOADS_PER_MINUTE} per minute"
   print -r -- "Selected domains: $source_description"
   print
 
@@ -747,9 +890,13 @@ self_test() {
   local migrated_url
   local migration_status=0
   local signal_pid
+  local rate_pid
+  local rate_start
+  local rate_end
   local -i cached_count=0
   local -i remaining_count=0
   local -a indexed_files
+  local -a rate_pids
   local old_url='https://cdn.xhscdn.com/path/image'
   local second_url='http://sns-webpic-qc.xhscdn.com/path/image!variant'
   local third_url='https://media.xhscdn.com/path/third-image'
@@ -766,6 +913,40 @@ self_test() {
 
   test_dir="$(/usr/bin/mktemp -d "${TMPDIR:-/tmp}/img-link-migrator-self-test.XXXXXX")" || return 1
   work_dir="$test_dir"
+  upload_interval_seconds=0.05
+  rate_pids=()
+  for file_index in 1 2 3; do
+    (
+      wait_for_upload_slot || exit 1
+      current_time_seconds > "${test_dir}/rate-slot-${file_index}.time"
+    ) &
+    rate_pids+=("$!")
+  done
+  for rate_pid in "${rate_pids[@]}"; do
+    wait "$rate_pid" || return 1
+  done
+  /usr/bin/sort -n "${test_dir}"/rate-slot-*.time \
+    > "${test_dir}/rate-slots.time" || return 1
+  LC_ALL=C /usr/bin/perl -e '
+    open my $input, "<", $ARGV[0] or exit 1;
+    my @times = <$input>;
+    exit 1 unless @times == 3;
+    for my $index (1 .. $#times) {
+      exit 1 if $times[$index] - $times[$index - 1] < 0.04;
+    }
+  ' "${test_dir}/rate-slots.time" || return 1
+  rate_start="$(current_time_seconds)" || return 1
+  defer_uploads 0.05 || return 1
+  wait_for_upload_slot || return 1
+  rate_end="$(current_time_seconds)" || return 1
+  LC_ALL=C /usr/bin/perl -e 'exit !(($ARGV[1] - $ARGV[0]) >= 0.04)' \
+    "$rate_start" "$rate_end" || return 1
+  is_upload_rate_error \
+    "Flooding detected. You can only upload 50 images per minute" || return 1
+  ! is_upload_rate_error "Duplicated upload" || return 1
+  /bin/rm -f -- "${work_dir}"/rate-slot-*.time \
+    "${work_dir}/rate-slots.time" "${work_dir}/next-upload-time"
+  upload_interval_seconds=$DEFAULT_UPLOAD_INTERVAL_SECONDS
   text_file="${test_dir}/images.txt"
   markdown_file="${test_dir}/note.md"
   long_markdown_file="${test_dir}/note.markdown"
