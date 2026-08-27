@@ -5,11 +5,12 @@ setopt PIPE_FAIL
 setopt EXTENDED_GLOB
 
 readonly APP_NAME="IMG Link Migrator Standalone"
-readonly APP_VERSION="0.1.0"
+readonly APP_VERSION="0.2.0"
 readonly USER_AGENT="IMG-Link-Migrator-Standalone/${APP_VERSION}"
 readonly MAX_IMAGE_BYTES=33554432
 readonly DEFAULT_HOST="xhscdn.com"
 readonly MAX_ATTEMPTS=4
+readonly CHEVERETO_URL="https://www.picgo.net"
 
 typeset -a target_files
 typeset -a urls
@@ -20,6 +21,11 @@ typeset -i reference_count=0
 api_key=""
 target_path=""
 all_hosts=false
+provider="imgbb"
+provider_name="ImgBB"
+cache_namespace="imgbb"
+downloaded_mime="application/octet-stream"
+downloaded_filename="image.bin"
 state_dir="${HOME}/Library/Application Support/${APP_NAME}"
 cache_file="${state_dir}/url-map.tsv"
 work_dir=""
@@ -49,16 +55,21 @@ file_hash() {
   LC_ALL=C /usr/bin/shasum -a 256 -- "$1" | /usr/bin/awk '{print $1}'
 }
 
-host_is_imgbb() {
+host_is_destination() {
   local host="${1:l}"
-  [[ "$host" == "ibb.co" || "$host" == *."ibb.co" ]]
+
+  if [[ "$provider" == "imgbb" ]]; then
+    [[ "$host" == "ibb.co" || "$host" == *."ibb.co" ]]
+  else
+    [[ "$host" == "picgo.net" || "$host" == *."picgo.net" ]]
+  fi
 }
 
 host_is_selected() {
   local host="${1:l}"
   local rule
 
-  host_is_imgbb "$host" && return 1
+  host_is_destination "$host" && return 1
   [[ "$all_hosts" == true ]] && return 0
 
   for rule in "${source_hosts[@]}"; do
@@ -148,12 +159,21 @@ collect_urls() {
 
 lookup_cache() {
   local wanted="$1"
+  local namespace
   local original
   local migrated
+  local third
 
   [[ -f "$cache_file" ]] || return 1
-  while IFS=$'\t' read -r original migrated; do
-    if [[ "$original" == "$wanted" && -n "$migrated" ]]; then
+  while IFS=$'\t' read -r namespace original third; do
+    if [[ -n "$third" ]]; then
+      migrated="$third"
+    else
+      migrated="$original"
+      original="$namespace"
+      namespace="imgbb"
+    fi
+    if [[ "$namespace" == "$cache_namespace" && "$original" == "$wanted" && -n "$migrated" ]]; then
       print -r -- "$migrated"
       return 0
     fi
@@ -168,7 +188,7 @@ record_cache() {
   /bin/mkdir -p -- "$state_dir" || return 1
   /usr/bin/touch "$cache_file" || return 1
   /bin/chmod 600 "$cache_file" || return 1
-  print -r -- "${original}"$'\t'"${migrated}" >> "$cache_file"
+  print -r -- "${cache_namespace}"$'\t'"${original}"$'\t'"${migrated}" >> "$cache_file"
 }
 
 sleep_before_retry() {
@@ -185,6 +205,7 @@ download_image() {
   local attempt
   local size
   local mime
+  local extension
   local -a curl_args
 
   if [[ "$url" =~ '^https?://([^/:?#]+)' ]]; then
@@ -213,6 +234,12 @@ download_image() {
       size="$(/usr/bin/stat -f '%z' "$output_file" 2>/dev/null || print 0)"
       mime="$(/usr/bin/file -b --mime-type "$output_file" 2>/dev/null)"
       if (( size > 0 && size <= MAX_IMAGE_BYTES )) && [[ "$mime" == image/* ]]; then
+        downloaded_mime="$mime"
+        extension="${mime#image/}"
+        extension="${extension%%+*}"
+        [[ "$extension" == "jpeg" ]] && extension="jpg"
+        [[ "$extension" =~ '^[A-Za-z0-9]+$' ]] || extension="img"
+        downloaded_filename="image.${extension}"
         return 0
       fi
       print -u2 -r -- "  Downloaded content is not a valid image or exceeds 32 MB."
@@ -225,10 +252,11 @@ download_image() {
   return 1
 }
 
-upload_image() {
+upload_imgbb() {
   local image_file="$1"
   local response_file="$2"
   local attempt
+  local curl_status
   local success
   local migrated_url
   local error_message
@@ -243,9 +271,9 @@ upload_image() {
       print -r -- "url = \"https://api.imgbb.com/1/upload?key=${api_key}\""
     } | /usr/bin/curl \
       --config - \
-      --form "image=@${image_file};filename=image" \
+      --form "image=@${image_file};filename=${downloaded_filename};type=${downloaded_mime}" \
       --output "$response_file"
-    local curl_status=$?
+    curl_status=$?
 
     if (( curl_status == 0 )); then
       success="$(
@@ -272,6 +300,66 @@ upload_image() {
     (( attempt < MAX_ATTEMPTS )) && sleep_before_retry "$attempt"
   done
   return 1
+}
+
+upload_chevereto() {
+  local image_file="$1"
+  local response_file="$2"
+  local attempt
+  local curl_status
+  local status_code
+  local migrated_url
+  local error_message
+
+  for (( attempt = 1; attempt <= MAX_ATTEMPTS; attempt++ )); do
+    {
+      print -r -- 'silent'
+      print -r -- 'show-error'
+      print -r -- 'connect-timeout = 15'
+      print -r -- 'max-time = 90'
+      print -r -- 'request = "POST"'
+      print -r -- 'header = "Accept: application/json"'
+      print -r -- "header = \"X-API-Key: ${api_key}\""
+      print -r -- "url = \"${CHEVERETO_URL}/api/1/upload\""
+    } | /usr/bin/curl \
+      --config - \
+      --form "source=@${image_file};filename=${downloaded_filename};type=${downloaded_mime}" \
+      --form 'format=json' \
+      --output "$response_file"
+    curl_status=$?
+
+    if (( curl_status == 0 )); then
+      status_code="$(
+        /usr/bin/plutil -extract status_code raw -o - "$response_file" 2>/dev/null
+      )"
+      if [[ "$status_code" == "200" ]]; then
+        migrated_url="$(
+          /usr/bin/plutil -extract image.url raw -o - "$response_file" 2>/dev/null
+        )"
+        if [[ "$migrated_url" == http://* || "$migrated_url" == https://* ]]; then
+          print -r -- "$migrated_url"
+          return 0
+        fi
+      fi
+      error_message="$(
+        /usr/bin/plutil -extract error.message raw -o - "$response_file" 2>/dev/null
+      )"
+      [[ -n "$error_message" ]] && print -u2 -r -- "  PicGo.net: $error_message"
+    else
+      print -u2 -r -- "  Upload attempt ${attempt} failed."
+    fi
+
+    (( attempt < MAX_ATTEMPTS )) && sleep_before_retry "$attempt"
+  done
+  return 1
+}
+
+upload_image() {
+  if [[ "$provider" == "imgbb" ]]; then
+    upload_imgbb "$@"
+  else
+    upload_chevereto "$@"
+  fi
 }
 
 replace_url_in_file() {
@@ -314,18 +402,41 @@ replace_url_in_file() {
 }
 
 prompt_settings() {
+  local service_input
   local target_input
   local source_input
   local host
 
   print -r -- "${APP_NAME} ${APP_VERSION}"
-  print -r -- "Migrates image URLs in .txt, .md, and .markdown files to ImgBB."
+  print -r -- "Migrates image URLs in .txt, .md, and .markdown files."
   print
 
-  read -rs "api_key?ImgBB API key: "
+  print -r -- "Choose the upload service:"
+  print -r -- "  Press Return or type 1 for ImgBB."
+  print -r -- "  Type 2 for PicGo.net (Chevereto API v1)."
+  read -r "service_input?Your choice [1]: "
+  service_input="${service_input:l}"
+  case "$service_input" in
+    ""|1|imgbb)
+      provider="imgbb"
+      provider_name="ImgBB"
+      cache_namespace="imgbb"
+      ;;
+    2|picgo|picgo.net|chevereto)
+      provider="chevereto"
+      provider_name="PicGo.net"
+      cache_namespace="chevereto:${CHEVERETO_URL}"
+      ;;
+    *)
+      fail "Choose 1 for ImgBB or 2 for PicGo.net."
+      return 1
+      ;;
+  esac
+
+  read -rs "api_key?${provider_name} API key: "
   print
   [[ -n "$api_key" ]] || {
-    fail "ImgBB API key is required."
+    fail "${provider_name} API key is required."
     return 1
   }
   if [[ ! "$api_key" =~ '^[A-Za-z0-9_-]+$' ]]; then
@@ -376,6 +487,7 @@ show_scan_summary() {
   print -r -- "Supported files: ${#target_files}"
   print -r -- "Matching URL references: ${reference_count}"
   print -r -- "Unique matching URLs: ${#urls}"
+  print -r -- "Upload service: $provider_name"
   print -r -- "Selected domains: $source_description"
   print
 
@@ -485,6 +597,10 @@ self_test() {
   /usr/bin/grep -aFq -- "$second_url" "$text_file" || return 1
   /usr/bin/grep -aFq -- "$new_url" "$markdown_file" || return 1
   /usr/bin/grep -aFq -- "$new_url" "$long_markdown_file" || return 1
+  provider="chevereto"
+  host_is_destination "cdn.picgo.net" || return 1
+  ! host_is_destination "i.ibb.co" || return 1
+  provider="imgbb"
   /bin/rm -rf -- "$test_dir"
   work_dir=""
   print -r -- "Self-test passed."

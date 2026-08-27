@@ -2,7 +2,7 @@
 
 **English** | [简体中文](README_CN.md)
 
-This repository contains two independent ImgBB migration programs:
+This repository contains two independent image-link migration programs:
 
 1. A Python Markdown GUI/CLI in `img_link_migrator.py`.
 2. A self-contained macOS program in `img-link-migrator.command` for raw image
@@ -10,13 +10,32 @@ This repository contains two independent ImgBB migration programs:
 
 Each program has its own runtime, scanning rules, prompts, cache, and safety
 behavior. The documentation for one program does not apply to the other.
-ImgBB is the first and currently the only supported image-hosting provider.
+Both programs support these upload destinations:
+
+- [ImgBB API v1](https://api.imgbb.com/1/upload)
+- [PicGo.net API v1.1](https://www.picgo.net/api-v1/?lang=en), based on the
+  [Chevereto API v1](https://v4-docs.chevereto.com/api/1/file-upload.html)
 
 ## Python Markdown GUI/CLI
 
 The Python program is designed for Obsidian vaults and other UTF-8 Markdown
 files. It understands common Markdown image syntax rather than treating every
 URL as an image.
+
+### Python upload providers
+
+| `--provider` value | Destination | API key environment variable | API base URL |
+| --- | --- | --- | --- |
+| `imgbb` | ImgBB | `IMGBB_API_KEY` | Fixed ImgBB API v1 endpoint. |
+| `chevereto` | PicGo.net or another Chevereto site | `CHEVERETO_API_KEY` | Defaults to `https://www.picgo.net`; the CLI can change it with `--chevereto-url`. |
+
+Provider caches are isolated. Switching the destination never reuses a URL or
+content-hash cache entry created for another provider.
+
+The GUI provides a PicGo.net preset. In the Python CLI, selecting `chevereto`
+uses the `X-API-Key` header and uploads the image in the `source` multipart
+field to `/api/1/upload`. A custom Chevereto site selected with
+`--chevereto-url` uses the same standard endpoint on that site.
 
 ### Python features
 
@@ -26,8 +45,9 @@ URL as an image.
 - Recognize inline Markdown images, HTML `<img>` elements, and Markdown
   reference-style images.
 - Skip YAML frontmatter, fenced code blocks, inline code, hidden folders, and
-  existing ImgBB links.
-- Download and validate each source image and enforce ImgBB's 32 MB limit.
+  existing links from the selected destination.
+- Download and validate each source image and enforce a 32 MB local safety
+  limit.
 - Show per-image progress, cache reuse, success, and failure details.
 - Retry automatically, with manual retry available in the GUI.
 - Deduplicate repeated URLs and identical image content.
@@ -39,7 +59,7 @@ URL as an image.
 ### Python requirements
 
 - Python 3.9 or newer
-- An ImgBB API key for migration
+- An API key for the selected upload provider
 - Tk for the GUI
 
 Homebrew distributes Tk separately from Python. If the GUI reports that no
@@ -63,15 +83,16 @@ python3 img_link_migrator.py --gui
 Then:
 
 1. Choose a Markdown file or vault folder.
-2. Paste the ImgBB API key. It is kept in memory for the current run only.
-3. Optionally enter one or more source domains, separated by commas.
-4. Choose whether changed files should be backed up.
-5. Click **Scan** to preview the detected links.
-6. Click **Start migration** to upload and replace successful links.
-7. If any item fails, click **Retry failed**.
+2. Select **ImgBB** or **PicGo.net (Chevereto)** as the upload provider.
+3. Paste that provider's API key. It is kept in memory for the current run.
+4. Optionally enter one or more source domains, separated by commas.
+5. Choose whether changed files should be backed up.
+6. Click **Scan** to preview the detected links.
+7. Click **Start migration** to upload and replace successful links.
+8. If any item fails, click **Retry failed**.
 
 The domain field can be left empty to migrate images from every external host.
-ImgBB's own domains are always excluded.
+Domains belonging to the selected destination are excluded.
 
 ### Python CLI
 
@@ -80,102 +101,118 @@ CLI commands must be run from the project directory, where
 
 #### Where to enter the API key
 
-- **GUI:** paste it into the **ImgBB API key** field.
-- **CLI (recommended):** create a temporary variable named `IMGBB_API_KEY` in
-  the current terminal and use the API key as its value.
-- **CLI (not recommended):** pass `--api-key "YOUR_KEY"` directly. The value
-  may be recorded in shell history or process listings.
+- **GUI:** select the provider, then paste its key into the API-key field.
+- **CLI:** use the environment variable matching `--provider`.
 
-`IMGBB_API_KEY` is the fixed variable name and should not be changed. The
-command used to set it depends on the current shell: fish, zsh, and bash use
-different `read` syntax. Run `echo $SHELL`, then use only the matching group
-below.
+| Provider | CLI selector | Environment variable |
+| --- | --- | --- |
+| ImgBB | `--provider imgbb` or omit `--provider` | `IMGBB_API_KEY` |
+| PicGo.net / Chevereto | `--provider chevereto` | `CHEVERETO_API_KEY` |
+
+The command used to set a variable depends on the current shell. Run
+`echo $SHELL`, then use only the matching group below and only the line for the
+selected provider.
 
 ##### fish
 
 A prompt resembling `directory (main)>`, together with an error mentioning
 `See help identifiers`, usually indicates fish.
 
-1. Copy the ImgBB API key.
+1. Copy the selected provider's API key.
 2. Run the input command below.
 3. When Terminal displays `API key:`, paste the key and press Return. fish may
    display `*` characters to mask the input.
 
 ```fish
+# ImgBB
 read --silent --global --export --prompt-str 'API key: ' IMGBB_API_KEY
+
+# PicGo.net / Chevereto
+read --silent --global --export --prompt-str 'API key: ' CHEVERETO_API_KEY
 ```
 
-Confirm that it is set without displaying its value:
+Confirm the selected variable without displaying its value:
 
 ```fish
 set --query IMGBB_API_KEY; and echo 'API key is set'; or echo 'API key is not set'
+set --query CHEVERETO_API_KEY; and echo 'API key is set'; or echo 'API key is not set'
 ```
 
 Clear it after use:
 
 ```fish
 set --erase --global IMGBB_API_KEY
+set --erase --global CHEVERETO_API_KEY
 ```
 
 ##### zsh
 
 ```zsh
+# ImgBB
 read -s "IMGBB_API_KEY?API key: "; echo
 export IMGBB_API_KEY
+
+# PicGo.net / Chevereto
+read -s "CHEVERETO_API_KEY?API key: "; echo
+export CHEVERETO_API_KEY
 ```
 
 Confirm that it is set:
 
 ```zsh
-if [[ -n "$IMGBB_API_KEY" ]]; then
-  echo "API key is set"
-else
-  echo "API key is not set"
-fi
+# Run only the line for the selected provider.
+[[ -n "${IMGBB_API_KEY:-}" ]] && echo "API key is set" || echo "API key is not set"
+[[ -n "${CHEVERETO_API_KEY:-}" ]] && echo "API key is set" || echo "API key is not set"
 ```
 
 Clear it after use:
 
 ```zsh
 unset IMGBB_API_KEY
+unset CHEVERETO_API_KEY
 ```
 
 ##### bash
 
 ```bash
+# ImgBB
 IFS= read -r -s -p "API key: " IMGBB_API_KEY; echo
 export IMGBB_API_KEY
+
+# PicGo.net / Chevereto
+IFS= read -r -s -p "API key: " CHEVERETO_API_KEY; echo
+export CHEVERETO_API_KEY
 ```
 
 Confirm that it is set:
 
 ```bash
-if [[ -n "$IMGBB_API_KEY" ]]; then
-  echo "API key is set"
-else
-  echo "API key is not set"
-fi
+# Run only the line for the selected provider.
+[[ -n "${IMGBB_API_KEY:-}" ]] && echo "API key is set" || echo "API key is not set"
+[[ -n "${CHEVERETO_API_KEY:-}" ]] && echo "API key is set" || echo "API key is not set"
 ```
 
 Clear it after use:
 
 ```bash
 unset IMGBB_API_KEY
+unset CHEVERETO_API_KEY
 ```
 
-Migration commands in this terminal session now read the key automatically.
-The variable expires when the terminal session closes.
+Migration commands in this terminal session now read the selected provider's
+key automatically. The variable expires when the terminal session closes.
 
 The key is needed only for `--apply`. Scanning and opening the GUI do not
 require it to be set in advance.
 
-To put the API key directly in the migration command, use the following full
-form and replace `YOUR_IMGBB_API_KEY` with the actual key:
+Passing `--api-key` directly also works, but its value may be stored in shell
+history or process listings. This Chevereto example uses PicGo.net:
 
 ```bash
 python3 img_link_migrator.py \
   --apply \
-  --api-key "YOUR_IMGBB_API_KEY" \
+  --provider chevereto \
+  --api-key "YOUR_CHEVERETO_API_KEY" \
   "$HOME/Documents/MyVault"
 ```
 
@@ -205,6 +242,16 @@ Then apply the migration after checking the scan output:
 
 ```bash
 python3 img_link_migrator.py --apply "$HOME/Documents/MyVault"
+```
+
+That command uses ImgBB. To upload to PicGo.net instead, set
+`CHEVERETO_API_KEY` and select Chevereto:
+
+```bash
+python3 img_link_migrator.py \
+  --apply \
+  --provider chevereto \
+  "$HOME/Documents/MyVault"
 ```
 
 To filter by source domain, add `--include-host`. The Xiaohongshu CDN below is
@@ -267,11 +314,13 @@ no value: writing the flag enables its behavior.
 | Target path | One or more Markdown files or directories; do not type the word `targets`. | Scan/apply requires a target; running with no arguments opens the GUI. | `"$HOME/Documents/MyVault"` or `"note.md"` |
 | `--gui` | Flag; enter no value after it. | Use CLI behavior. | `python3 img_link_migrator.py --gui` |
 | `--apply` | Flag; enter no value after it. | Scan only. | `python3 img_link_migrator.py --apply "$HOME/Documents/MyVault"` |
-| `--api-key KEY` | Replace `KEY` with the ImgBB API key. | Read `IMGBB_API_KEY`; apply mode fails if both are missing. | `--api-key "YOUR_IMGBB_API_KEY"`; the environment variable is safer. |
-| `--expiration SECONDS` | Replace `SECONDS` with a number of seconds. | Default `0`, requesting permanent storage. | Temporary values: `60`–`15552000`; example: `--expiration 600`. |
+| `--provider NAME` | Use `imgbb` or `chevereto`. | `imgbb` | `--provider chevereto` selects PicGo.net. |
+| `--chevereto-url URL` | Chevereto site base URL. | `https://www.picgo.net` | For another installation: `--provider chevereto --chevereto-url "https://images.example.com"`. |
+| `--api-key KEY` | Replace `KEY` with the selected provider's API key. | Read `IMGBB_API_KEY` or `CHEVERETO_API_KEY`; apply fails if missing. | `--api-key "YOUR_KEY"`; the matching environment variable is safer. |
+| `--expiration SECONDS` | Replace `SECONDS` with a number of seconds. | Default `0`, requesting permanent storage. | `60`–`15552000`; Chevereto receives an equivalent ISO 8601 duration. |
 | `--retries N` | Replace `N` with the retry count. | Default `3`, meaning up to three retries after the first failure. | Range `0`–`10`; `--retries 0` makes one attempt. |
 | `--include-host DOMAIN` | Replace `DOMAIN` with an allowed source domain. | Process every detected external image host. | `--include-host xhscdn.com`; repeat or comma-separate values. |
-| `--exclude-host DOMAIN` | Replace `DOMAIN` with an excluded source domain. | Add no extra exclusions; ImgBB hosts remain excluded. | `--exclude-host example.com`; repeat or comma-separate values. |
+| `--exclude-host DOMAIN` | Replace `DOMAIN` with an excluded source domain. | Add no extra exclusions; the selected destination remains excluded. | `--exclude-host example.com`; repeat or comma-separate values. |
 | `--state-dir PATH` | Replace `PATH` with the cache/backup directory. | Use the system app-data directory. | `--state-dir "./migrator-state"` |
 | `--no-backup` | Flag; enter no value after it. | Back up Markdown before changes. | `--apply --no-backup "$HOME/Documents/MyVault"` |
 | `--report PATH` | Replace `PATH` with a JSON report location. | Write no JSON report. | `--report "./report.json"` |
@@ -297,7 +346,8 @@ every original absolute path to its backup copy. Restoring a file only requires
 copying that backup over the corresponding original path.
 
 The persistent cache contains source URLs, SHA-256 image hashes, destination
-URLs, and expiration timestamps. It never contains the ImgBB API key.
+URLs, provider namespaces, and expiration timestamps. It never contains API
+keys.
 
 ### Supported Markdown syntax
 
@@ -319,7 +369,8 @@ The migration pipeline is:
 
 1. Scan Markdown and collect replaceable image URLs.
 2. Download and validate the first unique source image.
-3. Reuse a valid cached ImgBB link when possible; otherwise upload the image.
+3. Reuse a valid cache entry for the selected provider when possible;
+   otherwise upload the image.
 4. As soon as that image is ready, process every Markdown file referencing it:
    - If backups are enabled and the file has not yet been backed up in this
      run, save one copy of its original state.
@@ -336,11 +387,11 @@ and leaves unprocessed links unchanged.
 
 There is still a very short execution interval between receiving the upload
 response and completing the local atomic write. If the process is forcibly
-terminated during that interval, ImgBB may temporarily contain an image not
-yet referenced by Markdown. The next run reuses the local cache and completes
-the replacement.
+terminated during that interval, the selected provider may temporarily contain
+an image not yet referenced by Markdown. The next run reuses the
+provider-specific local cache and completes the replacement.
 
-### Python ImgBB expiration
+### Python upload expiration
 
 The default expiration is `0`, which requests permanent storage. To request
 automatic deletion, use a value from 60 through 15,552,000 seconds:
@@ -353,6 +404,9 @@ python3 img_link_migrator.py \
 ```
 
 Expired cache entries are not reused.
+
+ImgBB receives the value as seconds. Chevereto receives the equivalent ISO
+8601 duration, such as `PT600S`.
 
 ### Python development
 
@@ -368,7 +422,7 @@ Run a Python syntax check:
 python3 -m py_compile img_link_migrator.py
 ```
 
-The tests use a fake ImgBB client and do not perform network requests.
+The tests use fake ImgBB and Chevereto responses and do not perform uploads.
 
 ### Python tool limitations
 
@@ -378,7 +432,7 @@ The tests use a fake ImgBB client and do not perform network requests.
   website as the HTTP referrer, which is sufficient for many public links.
 - URL parsing focuses on common Obsidian and Markdown image syntax. Links
   generated by custom plugins with nonstandard syntax may not be detected.
-- The Python tool does not delete images from ImgBB.
+- The Python tool does not delete images from any upload provider.
 
 ## Standalone single-file tool
 
@@ -393,7 +447,8 @@ runtime it neither reads nor launches `img_link_migrator.py`.
 - Scan file bytes directly without testing or converting the text encoding.
 - Find `http://` and `https://` URLs anywhere in supported files.
 - Filter URLs by source domain; the default is `xhscdn.com` and its subdomains.
-- Always exclude existing ImgBB URLs.
+- Upload to either ImgBB or PicGo.net using Chevereto API v1.
+- Exclude existing links belonging to the selected destination.
 - Download each selected URL and reject content that is not an image or is
   larger than 32 MB.
 - Retry each download and upload up to four total attempts with automatic
@@ -410,7 +465,7 @@ Use the Python program when Markdown-aware parsing rules are needed.
 ### Standalone requirements
 
 - macOS
-- An ImgBB API key
+- An API key for ImgBB or PicGo.net
 - The macOS system `zsh`, `curl`, `plutil`, `file`, `Perl`, and related command
   line tools
 
@@ -424,9 +479,27 @@ Double-click `img-link-migrator.command`, or run it from Terminal:
 
 The program asks only for the following information:
 
-1. Enter the ImgBB API key. Typing is hidden for the current run.
-2. Drag one supported file or directory into Terminal and press Return.
-3. Choose the source domains. After scanning, migration starts immediately.
+1. Select ImgBB or PicGo.net as the upload service.
+2. Enter that service's API key. Typing is hidden for the current run.
+3. Drag one supported file or directory into Terminal and press Return.
+4. Choose the source domains. After scanning, migration starts immediately.
+
+The upload-service prompt is:
+
+```text
+Choose the upload service:
+  Press Return or type 1 for ImgBB.
+  Type 2 for PicGo.net (Chevereto API v1).
+Your choice [1]:
+```
+
+| Input | Upload destination |
+| --- | --- |
+| Press Return, `1`, or `imgbb` | ImgBB |
+| `2`, `picgo`, `picgo.net`, or `chevereto` | PicGo.net |
+
+For PicGo.net, the tool sends the image as the `source` multipart field to
+`/api/1/upload` with the `X-API-Key` header.
 
 The source explanation displayed by the program is:
 
@@ -466,8 +539,8 @@ to all matching files, the program starts the next image.
 
 The standalone cache is stored at
 `~/Library/Application Support/IMG Link Migrator Standalone/url-map.tsv`. It
-contains source and destination URLs, not the API key. Moving the `.command`
-file does not affect this cache.
+contains provider namespaces plus source and destination URLs, not API keys.
+Moving the `.command` file does not affect this cache.
 
 ### Standalone example
 

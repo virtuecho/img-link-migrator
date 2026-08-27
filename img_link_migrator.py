@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
-"""Migrate external images in Markdown files to ImgBB.
+"""Migrate external images in Markdown files to supported image hosts.
 
 The module provides both a CLI and a small Tk GUI.  It deliberately stores no
-API key on disk; use the IMGBB_API_KEY environment variable or paste the key
-into the GUI for the current run.
+API key on disk; use the provider environment variable or paste the key into
+the GUI for the current run.
 """
 
 from __future__ import annotations
@@ -32,10 +32,14 @@ from typing import Callable, Dict, Iterable, List, Optional, Sequence, Set, Tupl
 
 
 APP_NAME = "IMG Link Migrator"
-APP_VERSION = "0.1.0"
-ENV_API_KEY = "IMGBB_API_KEY"
+APP_VERSION = "0.2.0"
+ENV_IMGBB_API_KEY = "IMGBB_API_KEY"
+ENV_CHEVERETO_API_KEY = "CHEVERETO_API_KEY"
+DEFAULT_PROVIDER = "imgbb"
+DEFAULT_CHEVERETO_URL = "https://www.picgo.net"
 MAX_IMAGE_BYTES = 32 * 1024 * 1024
-DEFAULT_EXCLUDED_HOSTS = ("ibb.co", "i.ibb.co", "api.imgbb.com")
+IMGBB_EXCLUDED_HOSTS = ("ibb.co", "i.ibb.co", "api.imgbb.com")
+DEFAULT_EXCLUDED_HOSTS = IMGBB_EXCLUDED_HOSTS
 USER_AGENT = "IMG-Link-Migrator/{}".format(APP_VERSION)
 
 
@@ -373,18 +377,36 @@ class StateStore:
         except (TypeError, ValueError):
             return False
 
-    def lookup_url(self, original_url: str, required_expiration: int = 0) -> Optional[str]:
+    @staticmethod
+    def _cache_key(value: str, namespace: str) -> str:
+        if namespace == DEFAULT_PROVIDER:
+            return value
+        return "{}\0{}".format(namespace, value)
+
+    def lookup_url(
+        self,
+        original_url: str,
+        required_expiration: int = 0,
+        namespace: str = DEFAULT_PROVIDER,
+    ) -> Optional[str]:
         with self._lock:
             urls = self.data.get("urls", {})
-            entry = urls.get(original_url) if isinstance(urls, dict) else None
+            key = self._cache_key(original_url, namespace)
+            entry = urls.get(key) if isinstance(urls, dict) else None
             if self._entry_valid(entry, required_expiration):
                 return str(entry["url"])
         return None
 
-    def lookup_hash(self, digest: str, required_expiration: int = 0) -> Optional[str]:
+    def lookup_hash(
+        self,
+        digest: str,
+        required_expiration: int = 0,
+        namespace: str = DEFAULT_PROVIDER,
+    ) -> Optional[str]:
         with self._lock:
             hashes = self.data.get("hashes", {})
-            entry = hashes.get(digest) if isinstance(hashes, dict) else None
+            key = self._cache_key(digest, namespace)
+            entry = hashes.get(key) if isinstance(hashes, dict) else None
             if self._entry_valid(entry, required_expiration):
                 return str(entry["url"])
         return None
@@ -395,6 +417,7 @@ class StateStore:
         digest: str,
         new_url: str,
         expiration: int,
+        namespace: str = DEFAULT_PROVIDER,
     ) -> None:
         now = time.time()
         entry = {
@@ -407,9 +430,9 @@ class StateStore:
             urls = self.data.setdefault("urls", {})
             hashes = self.data.setdefault("hashes", {})
             if isinstance(urls, dict):
-                urls[original_url] = entry
+                urls[self._cache_key(original_url, namespace)] = entry
             if isinstance(hashes, dict):
-                hashes[digest] = entry
+                hashes[self._cache_key(digest, namespace)] = entry
             self._save_locked()
 
     def _save_locked(self) -> None:
@@ -468,7 +491,58 @@ def _safe_filename(url: str, extension: str) -> str:
     return (stem[:80] + suffix.lower())[:100]
 
 
-class ImgBBClient:
+def _multipart_file_body(
+    boundary: str,
+    field_name: str,
+    data: bytes,
+    content_type: str,
+    filename: str,
+    fields: Sequence[Tuple[str, str]] = (),
+) -> bytes:
+    chunks: List[bytes] = []
+    for name, value in fields:
+        chunks.append(
+            (
+                "--{0}\r\n"
+                'Content-Disposition: form-data; name="{1}"\r\n\r\n'
+                "{2}\r\n"
+            ).format(boundary, name.replace('"', ""), value).encode("utf-8")
+        )
+    chunks.append(
+        (
+            "--{0}\r\n"
+            'Content-Disposition: form-data; name="{1}"; filename="{2}"\r\n'
+            "Content-Type: {3}\r\n\r\n"
+        ).format(
+            boundary,
+            field_name.replace('"', ""),
+            filename.replace('"', ""),
+            content_type,
+        ).encode("utf-8")
+    )
+    chunks.extend((data, "\r\n--{}--\r\n".format(boundary).encode("ascii")))
+    return b"".join(chunks)
+
+
+def _normalize_chevereto_base_url(base_url: str) -> str:
+    parsed = urllib.parse.urlsplit(base_url.strip())
+    if parsed.scheme != "https" or not parsed.hostname:
+        raise MigrationError("Chevereto base URL must be a valid HTTPS URL.")
+    if parsed.username or parsed.password:
+        raise MigrationError("Chevereto base URL cannot contain credentials.")
+    if parsed.query or parsed.fragment:
+        raise MigrationError("Chevereto base URL cannot contain a query or fragment.")
+    clean_path = parsed.path.rstrip("/")
+    return urllib.parse.urlunsplit(
+        (parsed.scheme, parsed.netloc, clean_path, "", "")
+    )
+
+
+class BaseUploadClient:
+    provider_name = "image host"
+    environment_variable = "API_KEY"
+    cache_namespace = "default"
+
     def __init__(
         self,
         api_key: str,
@@ -484,8 +558,8 @@ class ImgBBClient:
         self.cancel_event = cancel_event or threading.Event()
         if not self.api_key:
             raise MigrationError(
-                "Missing ImgBB API key. Set {} or enter it in the GUI.".format(
-                    ENV_API_KEY
+                "Missing {} API key. Set {} or enter it in the GUI.".format(
+                    self.provider_name, self.environment_variable
                 )
             )
         if expiration and not 60 <= expiration <= 15_552_000:
@@ -543,7 +617,7 @@ class ImgBBClient:
                 with urllib.request.urlopen(request, timeout=30) as response:
                     content_length = response.headers.get("Content-Length")
                     if content_length and int(content_length) > MAX_IMAGE_BYTES:
-                        raise MigrationError("Image exceeds ImgBB's 32 MB limit.")
+                        raise MigrationError("Image exceeds the 32 MB safety limit.")
                     chunks: List[bytes] = []
                     total = 0
                     while True:
@@ -553,7 +627,7 @@ class ImgBBClient:
                             break
                         total += len(chunk)
                         if total > MAX_IMAGE_BYTES:
-                            raise MigrationError("Image exceeds ImgBB's 32 MB limit.")
+                            raise MigrationError("Image exceeds the 32 MB safety limit.")
                         chunks.append(chunk)
                     data = b"".join(chunks)
                     if not data:
@@ -574,14 +648,25 @@ class ImgBBClient:
         return self._retry(action, "Download", url)  # type: ignore[return-value]
 
     def upload(self, data: bytes, content_type: str, filename: str, url: str) -> str:
+        raise NotImplementedError
+
+    def transfer(self, url: str) -> Tuple[str, str]:
+        data, content_type, filename = self.download(url)
+        digest = hashlib.sha256(data).hexdigest()
+        return self.upload(data, content_type, filename, url), digest
+
+
+class ImgBBClient(BaseUploadClient):
+    provider_name = "ImgBB"
+    environment_variable = ENV_IMGBB_API_KEY
+    cache_namespace = DEFAULT_PROVIDER
+
+    def upload(self, data: bytes, content_type: str, filename: str, url: str) -> str:
         def action() -> str:
             boundary = "----ImgBBMigrator{}".format(uuid.uuid4().hex)
-            body = (
-                "--{0}\r\n"
-                'Content-Disposition: form-data; name="image"; filename="{1}"\r\n'
-                "Content-Type: {2}\r\n\r\n"
-            ).format(boundary, filename.replace('"', ""), content_type).encode("utf-8")
-            body += data + "\r\n--{}--\r\n".format(boundary).encode("ascii")
+            body = _multipart_file_body(
+                boundary, "image", data, content_type, filename
+            )
             query = {"key": self.api_key}
             if self.expiration:
                 query["expiration"] = str(self.expiration)
@@ -629,10 +714,108 @@ class ImgBBClient:
 
         return self._retry(action, "Upload", url)  # type: ignore[return-value]
 
-    def transfer(self, url: str) -> Tuple[str, str]:
-        data, content_type, filename = self.download(url)
-        digest = hashlib.sha256(data).hexdigest()
-        return self.upload(data, content_type, filename, url), digest
+
+class CheveretoClient(BaseUploadClient):
+    provider_name = "Chevereto"
+    environment_variable = ENV_CHEVERETO_API_KEY
+
+    def __init__(
+        self,
+        api_key: str,
+        base_url: str = DEFAULT_CHEVERETO_URL,
+        expiration: int = 0,
+        retries: int = 3,
+        callback: Optional[ProgressCallback] = None,
+        cancel_event: Optional[threading.Event] = None,
+    ) -> None:
+        self.base_url = _normalize_chevereto_base_url(base_url)
+        self.cache_namespace = "chevereto:{}".format(self.base_url.lower())
+        super().__init__(
+            api_key,
+            expiration=expiration,
+            retries=retries,
+            callback=callback,
+            cancel_event=cancel_event,
+        )
+
+    @staticmethod
+    def _error_message(payload: object, fallback: str) -> str:
+        if isinstance(payload, dict):
+            error = payload.get("error")
+            if isinstance(error, dict) and error.get("message"):
+                return str(error["message"])
+            status = payload.get("status_txt")
+            if status:
+                return str(status)
+        return fallback
+
+    def _request_json(self, request: urllib.request.Request, action: str) -> Dict[str, object]:
+        try:
+            with urllib.request.urlopen(request, timeout=60) as response:
+                payload = json.loads(response.read().decode("utf-8"))
+        except urllib.error.HTTPError as exc:
+            fallback = "Chevereto {} returned HTTP {}.".format(action, exc.code)
+            try:
+                payload = json.loads(exc.read().decode("utf-8", errors="replace"))
+                fallback += " {}".format(self._error_message(payload, ""))
+            except (ValueError, AttributeError):
+                pass
+            raise MigrationError(fallback.strip()) from None
+        except urllib.error.URLError as exc:
+            raise MigrationError(
+                "Could not reach Chevereto: {}".format(exc.reason)
+            ) from None
+        except ValueError:
+            raise MigrationError("Chevereto returned an invalid response.") from None
+        if not isinstance(payload, dict):
+            raise MigrationError("Chevereto returned an invalid response.")
+        return payload
+
+    def upload(self, data: bytes, content_type: str, filename: str, url: str) -> str:
+        def action() -> str:
+            boundary = "----IMGLinkMigrator{}".format(uuid.uuid4().hex)
+            fields: List[Tuple[str, str]] = [("format", "json")]
+            if self.expiration:
+                fields.append(("expiration", "PT{}S".format(self.expiration)))
+            body = _multipart_file_body(
+                boundary,
+                "source",
+                data,
+                content_type,
+                filename,
+                fields=fields,
+            )
+            request = urllib.request.Request(
+                self.base_url + "/api/1/upload",
+                data=body,
+                headers={
+                    "X-API-Key": self.api_key,
+                    "Content-Type": "multipart/form-data; boundary={}".format(boundary),
+                    "Content-Length": str(len(body)),
+                    "Accept": "application/json",
+                    "User-Agent": USER_AGENT,
+                },
+                method="POST",
+            )
+            payload = self._request_json(request, "upload")
+            if payload.get("error") or payload.get("status_code") not in {200, "200"}:
+                raise MigrationError(
+                    "Chevereto upload failed: {}".format(
+                        self._error_message(payload, "unexpected response")
+                    )
+                )
+            image_payload = payload.get("image")
+            new_url = image_payload.get("url") if isinstance(image_payload, dict) else None
+            if not isinstance(new_url, str):
+                new_url = None
+            parsed = urllib.parse.urlsplit(new_url or "")
+            if parsed.scheme not in {"http", "https"} or not parsed.hostname:
+                raise MigrationError(
+                    "Chevereto response does not contain a valid image URL."
+                )
+            return new_url
+
+        return self._retry(action, "Upload", url)  # type: ignore[return-value]
 
 
 class BackupSession:
@@ -697,13 +880,14 @@ class MigrationEngine:
     def __init__(
         self,
         store: StateStore,
-        client: Optional[ImgBBClient] = None,
+        client: Optional[BaseUploadClient] = None,
         include_hosts: Sequence[str] = (),
         exclude_hosts: Sequence[str] = DEFAULT_EXCLUDED_HOSTS,
         callback: Optional[ProgressCallback] = None,
         cancel_event: Optional[threading.Event] = None,
         expiration: int = 0,
         backup_enabled: bool = True,
+        cache_namespace: Optional[str] = None,
     ) -> None:
         self.store = store
         self.client = client
@@ -713,6 +897,9 @@ class MigrationEngine:
         self.cancel_event = cancel_event or threading.Event()
         self.expiration = expiration
         self.backup_enabled = backup_enabled
+        self.cache_namespace = cache_namespace or getattr(
+            client, "cache_namespace", DEFAULT_PROVIDER
+        )
 
     def _write_completed_url(
         self,
@@ -834,7 +1021,7 @@ class MigrationEngine:
             return report
         if self.client is None:
             raise MigrationError(
-                "Internal error: ImgBB client is missing for an apply run."
+                "Internal error: upload client is missing for an apply run."
             )
 
         results: Dict[str, UrlResult] = {}
@@ -853,7 +1040,9 @@ class MigrationEngine:
                     current=index,
                     total=len(urls),
                 )
-                cached = self.store.lookup_url(url, self.expiration)
+                cached = self.store.lookup_url(
+                    url, self.expiration, namespace=self.cache_namespace
+                )
                 if cached:
                     result = UrlResult(
                         url, cached, "cached", "Reused local migration cache."
@@ -891,10 +1080,16 @@ class MigrationEngine:
                 try:
                     data, content_type, filename = self.client.download(url)
                     digest = hashlib.sha256(data).hexdigest()
-                    hash_cached = self.store.lookup_hash(digest, self.expiration)
+                    hash_cached = self.store.lookup_hash(
+                        digest, self.expiration, namespace=self.cache_namespace
+                    )
                     if hash_cached:
                         self.store.record(
-                            url, digest, hash_cached, self.expiration
+                            url,
+                            digest,
+                            hash_cached,
+                            self.expiration,
+                            namespace=self.cache_namespace,
                         )
                         result = UrlResult(
                             url,
@@ -908,7 +1103,11 @@ class MigrationEngine:
                             data, content_type, filename, url
                         )
                         self.store.record(
-                            url, digest, new_url, self.expiration
+                            url,
+                            digest,
+                            new_url,
+                            self.expiration,
+                            namespace=self.cache_namespace,
                         )
                         result = UrlResult(url, new_url, "uploaded", "Upload succeeded.")
                         report.uploaded_urls += 1
@@ -972,6 +1171,69 @@ def _parse_hosts(values: Sequence[str]) -> Tuple[str, ...]:
     return tuple(dict.fromkeys(hosts))
 
 
+def _provider_environment_variable(provider: str) -> str:
+    if provider == "imgbb":
+        return ENV_IMGBB_API_KEY
+    if provider == "chevereto":
+        return ENV_CHEVERETO_API_KEY
+    raise MigrationError("Unsupported upload provider: {}".format(provider))
+
+
+def _provider_excluded_hosts(
+    provider: str, chevereto_url: str = DEFAULT_CHEVERETO_URL
+) -> Tuple[str, ...]:
+    if provider == "imgbb":
+        return IMGBB_EXCLUDED_HOSTS
+    if provider == "chevereto":
+        base_url = _normalize_chevereto_base_url(chevereto_url)
+        host = urllib.parse.urlsplit(base_url).hostname
+        if host == "www.picgo.net":
+            host = "picgo.net"
+        return (host,) if host else ()
+    raise MigrationError("Unsupported upload provider: {}".format(provider))
+
+
+def _provider_cache_namespace(
+    provider: str, chevereto_url: str = DEFAULT_CHEVERETO_URL
+) -> str:
+    if provider == "imgbb":
+        return DEFAULT_PROVIDER
+    if provider == "chevereto":
+        return "chevereto:{}".format(
+            _normalize_chevereto_base_url(chevereto_url).lower()
+        )
+    raise MigrationError("Unsupported upload provider: {}".format(provider))
+
+
+def _create_upload_client(
+    provider: str,
+    api_key: str,
+    expiration: int,
+    retries: int,
+    callback: Optional[ProgressCallback],
+    cancel_event: threading.Event,
+    chevereto_url: str = DEFAULT_CHEVERETO_URL,
+) -> BaseUploadClient:
+    if provider == "imgbb":
+        return ImgBBClient(
+            api_key,
+            expiration=expiration,
+            retries=retries,
+            callback=callback,
+            cancel_event=cancel_event,
+        )
+    if provider == "chevereto":
+        return CheveretoClient(
+            api_key,
+            base_url=chevereto_url,
+            expiration=expiration,
+            retries=retries,
+            callback=callback,
+            cancel_event=cancel_event,
+        )
+    raise MigrationError("Unsupported upload provider: {}".format(provider))
+
+
 def _cli_callback(event: Dict[str, object]) -> None:
     kind = event.get("kind")
     if kind == "discovered":
@@ -1012,18 +1274,26 @@ def _run_cli(args: argparse.Namespace) -> int:
     if not targets:
         raise MigrationError("Specify at least one Markdown file or directory.")
     include_hosts = _parse_hosts(args.include_host)
-    exclude_hosts = DEFAULT_EXCLUDED_HOSTS + _parse_hosts(args.exclude_host)
+    exclude_hosts = _provider_excluded_hosts(
+        args.provider, args.chevereto_url
+    ) + _parse_hosts(args.exclude_host)
+    cache_namespace = _provider_cache_namespace(
+        args.provider, args.chevereto_url
+    )
     state_root = pathlib.Path(args.state_dir) if args.state_dir else None
     store = StateStore(state_root)
     cancel_event = threading.Event()
     client = None
     if args.apply:
-        client = ImgBBClient(
-            args.api_key or os.environ.get(ENV_API_KEY, ""),
-            expiration=args.expiration,
-            retries=args.retries,
-            callback=_cli_callback,
-            cancel_event=cancel_event,
+        env_name = _provider_environment_variable(args.provider)
+        client = _create_upload_client(
+            args.provider,
+            args.api_key or os.environ.get(env_name, ""),
+            args.expiration,
+            args.retries,
+            _cli_callback,
+            cancel_event,
+            chevereto_url=args.chevereto_url,
         )
     engine = MigrationEngine(
         store,
@@ -1034,6 +1304,7 @@ def _run_cli(args: argparse.Namespace) -> int:
         cancel_event=cancel_event,
         expiration=args.expiration,
         backup_enabled=not args.no_backup,
+        cache_namespace=cache_namespace,
     )
     try:
         report = engine.run(targets, apply=args.apply)
@@ -1093,7 +1364,8 @@ class MigratorGUI:
         self.root.minsize(820, 560)
 
         self.target_var = tk.StringVar()
-        self.key_var = tk.StringVar(value=os.environ.get(ENV_API_KEY, ""))
+        self.provider_var = tk.StringVar(value="ImgBB")
+        self.key_var = tk.StringVar(value=os.environ.get(ENV_IMGBB_API_KEY, ""))
         self.include_var = tk.StringVar()
         self.expiration_var = tk.StringVar(value="0")
         self.retries_var = tk.StringVar(value="3")
@@ -1118,7 +1390,7 @@ class MigratorGUI:
         outer = ttk.Frame(root, padding=14)
         outer.pack(fill="both", expand=True)
         outer.columnconfigure(1, weight=1)
-        outer.rowconfigure(7, weight=1)
+        outer.rowconfigure(8, weight=1)
 
         ttk.Label(outer, text="File or directory").grid(
             row=0, column=0, sticky="w", pady=4
@@ -1133,27 +1405,43 @@ class MigratorGUI:
             row=0, column=3, padx=2
         )
 
-        ttk.Label(outer, text="ImgBB API key").grid(row=1, column=0, sticky="w", pady=4)
-        ttk.Entry(outer, textvariable=self.key_var, show="*").grid(
+        ttk.Label(outer, text="Upload provider").grid(
+            row=1, column=0, sticky="w", pady=4
+        )
+        provider_box = ttk.Combobox(
+            outer,
+            textvariable=self.provider_var,
+            values=("ImgBB", "PicGo.net (Chevereto)"),
+            state="readonly",
+        )
+        provider_box.grid(
             row=1, column=1, columnspan=3, sticky="ew", padx=8, pady=4
+        )
+        provider_box.bind("<<ComboboxSelected>>", self._provider_changed)
+
+        self.key_label = ttk.Label(outer, text="ImgBB API key")
+        self.key_label.grid(row=2, column=0, sticky="w", pady=4)
+        ttk.Entry(outer, textvariable=self.key_var, show="*").grid(
+            row=2, column=1, columnspan=3, sticky="ew", padx=8, pady=4
         )
 
         ttk.Label(outer, text="Include hosts").grid(
-            row=2, column=0, sticky="w", pady=4
+            row=3, column=0, sticky="w", pady=4
         )
         ttk.Entry(outer, textvariable=self.include_var).grid(
-            row=2, column=1, columnspan=3, sticky="ew", padx=8, pady=4
+            row=3, column=1, columnspan=3, sticky="ew", padx=8, pady=4
         )
         ttk.Label(
             outer,
             text=(
                 "Leave empty for every external image host; separate hosts "
-                "with commas. Existing ImgBB URLs are always skipped."
+                "with commas. Existing links from the selected destination "
+                "are skipped."
             ),
-        ).grid(row=3, column=1, columnspan=3, sticky="w", padx=8)
+        ).grid(row=4, column=1, columnspan=3, sticky="w", padx=8)
 
         options = ttk.Frame(outer)
-        options.grid(row=4, column=0, columnspan=4, sticky="ew", pady=(10, 6))
+        options.grid(row=5, column=0, columnspan=4, sticky="ew", pady=(10, 6))
         ttk.Label(options, text="Expiration (seconds; 0 = permanent)").pack(
             side="left"
         )
@@ -1169,7 +1457,7 @@ class MigratorGUI:
         ).pack(side="left", padx=(20, 0))
 
         actions = ttk.Frame(outer)
-        actions.grid(row=5, column=0, columnspan=4, sticky="ew", pady=6)
+        actions.grid(row=6, column=0, columnspan=4, sticky="ew", pady=6)
         self.scan_button = ttk.Button(actions, text="Scan", command=self._scan)
         self.scan_button.pack(side="left")
         self.migrate_button = ttk.Button(
@@ -1187,7 +1475,7 @@ class MigratorGUI:
 
         ttk.Progressbar(
             outer, variable=self.progress_var, maximum=100, mode="determinate"
-        ).grid(row=6, column=0, columnspan=4, sticky="ew", pady=(4, 8))
+        ).grid(row=7, column=0, columnspan=4, sticky="ew", pady=(4, 8))
 
         columns = ("status", "url", "file", "detail")
         self.tree = ttk.Treeview(outer, columns=columns, show="headings")
@@ -1199,14 +1487,31 @@ class MigratorGUI:
         self.tree.column("url", width=370)
         self.tree.column("file", width=260)
         self.tree.column("detail", width=250)
-        self.tree.grid(row=7, column=0, columnspan=4, sticky="nsew")
+        self.tree.grid(row=8, column=0, columnspan=4, sticky="nsew")
         scrollbar = ttk.Scrollbar(outer, orient="vertical", command=self.tree.yview)
-        scrollbar.grid(row=7, column=4, sticky="ns")
+        scrollbar.grid(row=8, column=4, sticky="ns")
         self.tree.configure(yscrollcommand=scrollbar.set)
 
         ttk.Label(outer, textvariable=self.summary_var, anchor="w").grid(
-            row=8, column=0, columnspan=4, sticky="ew", pady=(8, 0)
+            row=9, column=0, columnspan=4, sticky="ew", pady=(8, 0)
         )
+
+    def _provider_id(self) -> str:
+        return (
+            "chevereto"
+            if self.provider_var.get().startswith("PicGo.net")
+            else "imgbb"
+        )
+
+    def _provider_changed(self, _event: object = None) -> None:
+        provider = self._provider_id()
+        env_name = _provider_environment_variable(provider)
+        self.key_label.configure(
+            text="{} API key".format(
+                "PicGo.net" if provider == "chevereto" else "ImgBB"
+            )
+        )
+        self.key_var.set(os.environ.get(env_name, ""))
 
     def _choose_file(self) -> None:
         selected = self.filedialog.askopenfilename(
@@ -1225,7 +1530,7 @@ class MigratorGUI:
 
     def _settings(
         self, apply: bool
-    ) -> Tuple[pathlib.Path, str, int, int, Tuple[str, ...], bool]:
+    ) -> Tuple[pathlib.Path, str, str, int, int, Tuple[str, ...], bool]:
         target = pathlib.Path(self.target_var.get().strip()).expanduser()
         if not self.target_var.get().strip() or not target.exists():
             raise MigrationError("Choose a valid Markdown file or directory.")
@@ -1240,11 +1545,13 @@ class MigratorGUI:
             )
         if not 0 <= retries <= 10:
             raise MigrationError("Retries must be between 0 and 10.")
+        provider = self._provider_id()
         if apply and not self.key_var.get().strip():
-            raise MigrationError("Enter an ImgBB API key.")
+            raise MigrationError("Enter an API key for the selected provider.")
         hosts = _parse_hosts([self.include_var.get()])
         return (
             target,
+            provider,
             self.key_var.get().strip(),
             expiration,
             retries,
@@ -1276,9 +1583,15 @@ class MigratorGUI:
         if self.worker and self.worker.is_alive():
             return
         try:
-            target, api_key, expiration, retries, hosts, backup_enabled = self._settings(
-                apply
-            )
+            (
+                target,
+                provider,
+                api_key,
+                expiration,
+                retries,
+                hosts,
+                backup_enabled,
+            ) = self._settings(apply)
         except MigrationError as exc:
             self.messagebox.showerror(APP_NAME, str(exc))
             return
@@ -1301,21 +1614,25 @@ class MigratorGUI:
                 store = StateStore()
                 client = None
                 if apply:
-                    client = ImgBBClient(
+                    client = _create_upload_client(
+                        provider,
                         api_key,
-                        expiration=expiration,
-                        retries=retries,
-                        callback=callback,
-                        cancel_event=self.cancel_event,
+                        expiration,
+                        retries,
+                        callback,
+                        self.cancel_event,
                     )
+                excluded_hosts = _provider_excluded_hosts(provider)
                 engine = MigrationEngine(
                     store,
                     client=client,
                     include_hosts=hosts,
+                    exclude_hosts=excluded_hosts,
                     callback=callback,
                     cancel_event=self.cancel_event,
                     expiration=expiration,
                     backup_enabled=backup_enabled,
+                    cache_namespace=_provider_cache_namespace(provider),
                 )
                 report = engine.run([target], apply=apply, only_urls=only_urls)
                 self.event_queue.put(("done", report))
@@ -1452,7 +1769,7 @@ class MigratorGUI:
 
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        description="Migrate external Markdown images. ImgBB is currently supported."
+        description="Migrate external Markdown images to a supported image host."
     )
     parser.add_argument("targets", nargs="*", help="Markdown file(s) or directories")
     mode = parser.add_mutually_exclusive_group()
@@ -1463,16 +1780,28 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Upload and replace links; without this flag, only scan",
     )
     parser.add_argument(
+        "--provider",
+        choices=("imgbb", "chevereto"),
+        default=DEFAULT_PROVIDER,
+        help="Upload provider: imgbb or chevereto (default: imgbb)",
+    )
+    parser.add_argument(
+        "--chevereto-url",
+        default=DEFAULT_CHEVERETO_URL,
+        help="Chevereto site base URL (default: https://www.picgo.net)",
+    )
+    parser.add_argument(
         "--api-key",
-        help="ImgBB API key; the {} environment variable is safer".format(
-            ENV_API_KEY
+        help=(
+            "Selected provider API key; use IMGBB_API_KEY or "
+            "CHEVERETO_API_KEY to keep it out of shell history"
         ),
     )
     parser.add_argument(
         "--expiration",
         type=int,
         default=0,
-        help="ImgBB expiration in seconds: 0 or 60-15552000 (default: 0)",
+        help="Expiration in seconds: 0 or 60-15552000 (default: 0)",
     )
     parser.add_argument(
         "--retries",

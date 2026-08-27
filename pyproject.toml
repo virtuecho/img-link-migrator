@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "img-link-migrator"
-version = "0.1.0"
-description = "Standalone GUI and CLI for migrating Markdown image links to ImgBB"
+version = "0.2.0"
+description = "GUI, CLI, and standalone tools for migrating external image links"
 readme = "README.md"
 requires-python = ">=3.9"
 license = { file = "LICENSE" }

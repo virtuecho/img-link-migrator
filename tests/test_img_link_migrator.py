@@ -6,6 +6,7 @@ import tempfile
 import threading
 import time
 import unittest
+from unittest import mock
 
 
 PROJECT_DIR = pathlib.Path(__file__).resolve().parents[1]
@@ -40,14 +41,26 @@ class ImmediateEvent:
         return False
 
 
+class FakeHTTPResponse:
+    def __init__(self, payload):
+        self.payload = json.dumps(payload).encode("utf-8")
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc, traceback):
+        return False
+
+    def read(self):
+        return self.payload
+
+
 class SourcePolicyTests(unittest.TestCase):
     def test_source_files_are_ascii_only(self):
-        source_files = [
-            PROJECT_DIR / "img_link_migrator.py",
-            PROJECT_DIR / "launch-gui.command",
-            PROJECT_DIR / "pyproject.toml",
-            pathlib.Path(__file__).resolve(),
-        ]
+        source_files = list(PROJECT_DIR.glob("*.py"))
+        source_files.extend(PROJECT_DIR.glob("*.command"))
+        source_files.extend((PROJECT_DIR / "tests").glob("*.py"))
+        source_files.append(PROJECT_DIR / "pyproject.toml")
         for path in source_files:
             with self.subTest(path=path.name):
                 path.read_bytes().decode("ascii")
@@ -62,6 +75,10 @@ class SourcePolicyTests(unittest.TestCase):
             migrator.USER_AGENT,
             "IMG-Link-Migrator/{}".format(project_version),
         )
+        command_text = (PROJECT_DIR / "img-link-migrator.command").read_text(
+            encoding="ascii"
+        )
+        self.assertIn('readonly APP_VERSION="{}"'.format(project_version), command_text)
 
 
 class ObservingClient(FakeClient):
@@ -274,6 +291,101 @@ class MigrationTests(unittest.TestCase):
             self.assertEqual(
                 store.lookup_url("source", required_expiration=600),
                 "https://i.ibb.co/temp.png",
+            )
+
+    def test_provider_caches_are_isolated(self):
+        with tempfile.TemporaryDirectory() as raw_dir:
+            store = migrator.StateStore(pathlib.Path(raw_dir))
+            store.record(
+                "source",
+                "digest",
+                "https://i.ibb.co/image.png",
+                0,
+                namespace="imgbb",
+            )
+            store.record(
+                "source",
+                "digest",
+                "https://www.picgo.net/images/image.png",
+                0,
+                namespace="chevereto:https://www.picgo.net",
+            )
+            self.assertEqual(
+                store.lookup_url("source", namespace="imgbb"),
+                "https://i.ibb.co/image.png",
+            )
+            self.assertEqual(
+                store.lookup_url(
+                    "source", namespace="chevereto:https://www.picgo.net"
+                ),
+                "https://www.picgo.net/images/image.png",
+            )
+
+
+class CheveretoClientTests(unittest.TestCase):
+    def test_upload_uses_chevereto_multipart_contract(self):
+        responses = [
+            FakeHTTPResponse(
+                {
+                    "status_code": 200,
+                    "success": {"message": "file uploaded", "code": 200},
+                    "image": {
+                        "url": "https://www.picgo.net/images/example.png"
+                    },
+                    "status_txt": "OK",
+                }
+            ),
+        ]
+        client = migrator.CheveretoClient(
+            "fake-chevereto-key",
+            expiration=600,
+            retries=0,
+            cancel_event=ImmediateEvent(),
+        )
+        with mock.patch.object(
+            migrator.urllib.request, "urlopen", side_effect=responses
+        ) as urlopen:
+            result = client.upload(
+                b"\x89PNG\r\n\x1a\nimage",
+                "image/png",
+                "example.png",
+                "https://source.example/example.png",
+            )
+
+        self.assertEqual(result, "https://www.picgo.net/images/example.png")
+        self.assertEqual(urlopen.call_count, 1)
+        upload_request = urlopen.call_args_list[0].args[0]
+        self.assertEqual(
+            upload_request.full_url,
+            "https://www.picgo.net/api/1/upload",
+        )
+        headers = {name.lower(): value for name, value in upload_request.header_items()}
+        self.assertEqual(headers["x-api-key"], "fake-chevereto-key")
+        self.assertIn(b'name="source"; filename="example.png"', upload_request.data)
+        self.assertIn(b'name="format"', upload_request.data)
+        self.assertIn(b'name="expiration"', upload_request.data)
+        self.assertIn(b"PT600S", upload_request.data)
+
+    def test_picgo_destination_is_excluded_for_chevereto(self):
+        excluded = migrator._provider_excluded_hosts(
+            "chevereto", "https://www.picgo.net/"
+        )
+        self.assertFalse(
+            migrator._url_allowed(
+                "https://cdn.picgo.net/images/example.png", (), excluded
+            )
+        )
+        self.assertTrue(
+            migrator._url_allowed(
+                "https://cdn.example.com/images/example.png", (), excluded
+            )
+        )
+
+    def test_chevereto_base_url_rejects_embedded_credentials(self):
+        with self.assertRaises(migrator.MigrationError):
+            migrator.CheveretoClient(
+                "fake-chevereto-key",
+                base_url="https://user:password@images.example.com",
             )
 
 
