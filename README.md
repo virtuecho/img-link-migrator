@@ -26,8 +26,8 @@ URL as an image.
 
 | `--provider` value | Destination | API key environment variable | API base URL |
 | --- | --- | --- | --- |
+| `chevereto` (default) | PicGo.net or another Chevereto site | `CHEVERETO_API_KEY` | Defaults to `https://www.picgo.net`; the CLI can change it with `--chevereto-url`. |
 | `imgbb` | ImgBB | `IMGBB_API_KEY` | Fixed ImgBB API v1 endpoint. |
-| `chevereto` | PicGo.net or another Chevereto site | `CHEVERETO_API_KEY` | Defaults to `https://www.picgo.net`; the CLI can change it with `--chevereto-url`. |
 
 Provider caches are isolated. Switching the destination never reuses a URL or
 content-hash cache entry created for another provider.
@@ -83,7 +83,7 @@ python3 img_link_migrator.py --gui
 Then:
 
 1. Choose a Markdown file or vault folder.
-2. Select **ImgBB** or **PicGo.net (Chevereto)** as the upload provider.
+2. Keep the default **PicGo.net (Chevereto)** provider or select **ImgBB**.
 3. Paste that provider's API key. It is kept in memory for the current run.
 4. Optionally enter one or more source domains, separated by commas.
 5. Choose whether changed files should be backed up.
@@ -106,8 +106,8 @@ CLI commands must be run from the project directory, where
 
 | Provider | CLI selector | Environment variable |
 | --- | --- | --- |
-| ImgBB | `--provider imgbb` or omit `--provider` | `IMGBB_API_KEY` |
-| PicGo.net / Chevereto | `--provider chevereto` | `CHEVERETO_API_KEY` |
+| PicGo.net / Chevereto | `--provider chevereto` or omit `--provider` | `CHEVERETO_API_KEY` |
+| ImgBB | `--provider imgbb` | `IMGBB_API_KEY` |
 
 The command used to set a variable depends on the current shell. Run
 `echo $SHELL`, then use only the matching group below and only the line for the
@@ -244,13 +244,13 @@ Then apply the migration after checking the scan output:
 python3 img_link_migrator.py --apply "$HOME/Documents/MyVault"
 ```
 
-That command uses ImgBB. To upload to PicGo.net instead, set
-`CHEVERETO_API_KEY` and select Chevereto:
+That command uses PicGo.net and reads `CHEVERETO_API_KEY`. To use ImgBB
+instead, set `IMGBB_API_KEY` and select ImgBB explicitly:
 
 ```bash
 python3 img_link_migrator.py \
   --apply \
-  --provider chevereto \
+  --provider imgbb \
   "$HOME/Documents/MyVault"
 ```
 
@@ -314,7 +314,7 @@ no value: writing the flag enables its behavior.
 | Target path | One or more Markdown files or directories; do not type the word `targets`. | Scan/apply requires a target; running with no arguments opens the GUI. | `"$HOME/Documents/MyVault"` or `"note.md"` |
 | `--gui` | Flag; enter no value after it. | Use CLI behavior. | `python3 img_link_migrator.py --gui` |
 | `--apply` | Flag; enter no value after it. | Scan only. | `python3 img_link_migrator.py --apply "$HOME/Documents/MyVault"` |
-| `--provider NAME` | Use `imgbb` or `chevereto`. | `imgbb` | `--provider chevereto` selects PicGo.net. |
+| `--provider NAME` | Use `imgbb` or `chevereto`. | `chevereto`, using PicGo.net | `--provider imgbb` selects ImgBB. |
 | `--chevereto-url URL` | Chevereto site base URL. | `https://www.picgo.net` | For another installation: `--provider chevereto --chevereto-url "https://images.example.com"`. |
 | `--api-key KEY` | Replace `KEY` with the selected provider's API key. | Read `IMGBB_API_KEY` or `CHEVERETO_API_KEY`; apply fails if missing. | `--api-key "YOUR_KEY"`; the matching environment variable is safer. |
 | `--expiration SECONDS` | Replace `SECONDS` with a number of seconds. | Default `0`, requesting permanent storage. | `60`–`15552000`; Chevereto receives an equivalent ISO 8601 duration. |
@@ -455,8 +455,9 @@ runtime it neither reads nor launches `img_link_migrator.py`.
   larger than 32 MB.
 - Retry each download and upload up to four total attempts with automatic
   backoff.
-- Run up to three download/upload transfers in parallel. Progress lines retain
-  each URL's item number even when completion order differs.
+- Run a selectable number of download/upload transfers in parallel: default 3,
+  minimum 1, maximum 10. Progress lines retain each URL's item number even
+  when completion order differs.
 - Reuse its own persistent source-URL cache.
 - As each transfer succeeds, serialize its file updates and immediately replace
   every indexed occurrence with atomic file writes.
@@ -483,24 +484,26 @@ Double-click `img-link-migrator.command`, or run it from Terminal:
 
 The program asks only for the following information:
 
-1. Select ImgBB or PicGo.net as the upload service.
+1. Keep the default PicGo.net service or select ImgBB.
 2. Enter that service's API key. Typing is hidden for the current run.
 3. Drag one supported file or directory into Terminal and press Return.
-4. Choose the source domains. After scanning, migration starts immediately.
+4. Choose the source domains.
+5. Choose 1–10 parallel transfers, or press Return for the default 3. After
+   scanning, migration starts immediately.
 
 The upload-service prompt is:
 
 ```text
 Choose the upload service:
-  Press Return or type 1 for ImgBB.
-  Type 2 for PicGo.net (Chevereto API v1).
+  Press Return or type 1 for PicGo.net (Chevereto API v1).
+  Type 2 for ImgBB.
 Your choice [1]:
 ```
 
 | Input | Upload destination |
 | --- | --- |
-| Press Return, `1`, or `imgbb` | ImgBB |
-| `2`, `picgo`, `picgo.net`, or `chevereto` | PicGo.net |
+| Press Return, `1`, `picgo`, `picgo.net`, or `chevereto` | PicGo.net |
+| `2` or `imgbb` | ImgBB |
 
 For PicGo.net, the tool sends the image as the `source` multipart field to
 `/api/1/upload` with the `X-API-Key` header.
@@ -522,12 +525,27 @@ Your choice [xhscdn.com]:
 | `xhscdn.com,example.com` | URLs from either listed domain and their subdomains. |
 | `*` | URLs from every domain; only valid downloaded images are uploaded. |
 
+The parallel-transfer prompt is:
+
+```text
+Choose how many image transfers can run at once:
+  Press Return to use 3.
+  Or enter a number from 1 to 10.
+Parallel transfers [3]:
+```
+
+| Input | Parallel behavior |
+| --- | --- |
+| Press Return | Run up to 3 transfers at once. |
+| `1` | Use serial transfer while retaining the same atomic-write behavior. |
+| `2`–`10` | Run up to the selected number of transfers at once. |
+
 There is no backup question and no start-confirmation question. The scan count
 is displayed and processing begins immediately when matching URLs exist.
 
 During migration, `Downloading`, `Uploading`, `Uploaded`, and failure messages
 include the item's `[current/total]` number. The completion order can differ
-because up to three transfers run at once.
+because multiple transfers can run at once.
 
 ### Standalone replacement safety
 
@@ -547,7 +565,7 @@ the parent process one at a time, so concurrent transfers never write the same
 file simultaneously.
 
 Pressing `Control-C` once stops the queue from starting new transfers. The tool
-waits for the active group of up to three transfers, writes every successful
+waits for the active group, writes every successful
 result atomically, and then exits. Depending on retries and network timeouts,
 this graceful stop may take some time.
 
@@ -577,9 +595,9 @@ Images
 ### Standalone development check
 
 The self-test uses local temporary `.txt`, `.md`, and `.markdown` files,
-including a file that is not valid UTF-8. It verifies the three-worker queue,
-graceful interruption, cache resume, indexed replacement, and atomic writes
-without making network requests:
+including a file that is not valid UTF-8. It verifies the 1–10 range, a
+three-worker queue, graceful interruption, cache resume, indexed replacement,
+and atomic writes without making network requests:
 
 ```bash
 zsh -n img-link-migrator.command

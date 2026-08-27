@@ -80,6 +80,15 @@ class SourcePolicyTests(unittest.TestCase):
         )
         self.assertIn('readonly APP_VERSION="{}"'.format(project_version), command_text)
 
+    def test_picgo_is_the_default_provider_without_changing_legacy_cache_keys(self):
+        args = migrator._build_parser().parse_args(["note.md"])
+        self.assertEqual(args.provider, "chevereto")
+        self.assertEqual(migrator.ImgBBClient.cache_namespace, "imgbb")
+        self.assertEqual(
+            migrator.StateStore._cache_key("source", "imgbb"),
+            "source",
+        )
+
 
 class ObservingClient(FakeClient):
     def __init__(self, note):

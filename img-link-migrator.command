@@ -5,12 +5,13 @@ setopt PIPE_FAIL
 setopt EXTENDED_GLOB
 
 readonly APP_NAME="IMG Link Migrator Standalone"
-readonly APP_VERSION="0.3.0"
+readonly APP_VERSION="0.4.0"
 readonly USER_AGENT="IMG-Link-Migrator-Standalone/${APP_VERSION}"
 readonly MAX_IMAGE_BYTES=33554432
 readonly DEFAULT_HOST="xhscdn.com"
 readonly MAX_ATTEMPTS=4
-readonly MAX_PARALLEL_TRANSFERS=3
+readonly DEFAULT_PARALLEL_TRANSFERS=3
+readonly MAX_PARALLEL_TRANSFERS=10
 readonly CHEVERETO_URL="https://www.picgo.net"
 
 typeset -a target_files
@@ -23,9 +24,10 @@ typeset -i reference_count=0
 api_key=""
 target_path=""
 all_hosts=false
-provider="imgbb"
-provider_name="ImgBB"
-cache_namespace="imgbb"
+provider="chevereto"
+provider_name="PicGo.net"
+cache_namespace="chevereto:${CHEVERETO_URL}"
+parallel_transfers=$DEFAULT_PARALLEL_TRANSFERS
 downloaded_mime="application/octet-stream"
 downloaded_filename="image.bin"
 state_dir="${HOME}/Library/Application Support/${APP_NAME}"
@@ -490,10 +492,25 @@ replace_url_in_indexed_files() {
   [[ "$write_failed" == false ]]
 }
 
+set_parallel_transfers() {
+  local requested="$1"
+
+  if [[ -z "$requested" ]]; then
+    parallel_transfers=$DEFAULT_PARALLEL_TRANSFERS
+    return 0
+  fi
+  if [[ ! "$requested" =~ '^([1-9]|10)$' ]]; then
+    fail "Parallel transfers must be a number from 1 to 10."
+    return 1
+  fi
+  parallel_transfers=$requested
+}
+
 prompt_settings() {
   local service_input
   local target_input
   local source_input
+  local parallel_input
   local host
 
   print -r -- "${APP_NAME} ${APP_VERSION}"
@@ -501,23 +518,23 @@ prompt_settings() {
   print
 
   print -r -- "Choose the upload service:"
-  print -r -- "  Press Return or type 1 for ImgBB."
-  print -r -- "  Type 2 for PicGo.net (Chevereto API v1)."
+  print -r -- "  Press Return or type 1 for PicGo.net (Chevereto API v1)."
+  print -r -- "  Type 2 for ImgBB."
   read -r "service_input?Your choice [1]: "
   service_input="${service_input:l}"
   case "$service_input" in
-    ""|1|imgbb)
-      provider="imgbb"
-      provider_name="ImgBB"
-      cache_namespace="imgbb"
-      ;;
-    2|picgo|picgo.net|chevereto)
+    ""|1|picgo|picgo.net|chevereto)
       provider="chevereto"
       provider_name="PicGo.net"
       cache_namespace="chevereto:${CHEVERETO_URL}"
       ;;
+    2|imgbb)
+      provider="imgbb"
+      provider_name="ImgBB"
+      cache_namespace="imgbb"
+      ;;
     *)
-      fail "Choose 1 for ImgBB or 2 for PicGo.net."
+      fail "Choose 1 for PicGo.net or 2 for ImgBB."
       return 1
       ;;
   esac
@@ -563,6 +580,13 @@ prompt_settings() {
       fi
     done
   fi
+
+  print
+  print -r -- "Choose how many image transfers can run at once:"
+  print -r -- "  Press Return to use 3."
+  print -r -- "  Or enter a number from 1 to 10."
+  read -r "parallel_input?Parallel transfers [3]: "
+  set_parallel_transfers "$parallel_input" || return 1
 }
 
 show_scan_summary() {
@@ -577,7 +601,7 @@ show_scan_summary() {
   print -r -- "Matching URL references: ${reference_count}"
   print -r -- "Unique matching URLs: ${#urls}"
   print -r -- "Upload service: $provider_name"
-  print -r -- "Parallel transfers: $MAX_PARALLEL_TRANSFERS"
+  print -r -- "Parallel transfers: $parallel_transfers"
   print -r -- "Selected domains: $source_description"
   print
 
@@ -618,7 +642,7 @@ run_migration() {
 
   while (( next_index <= total || ${#active_job_ids} > 0 )); do
     while [[ "$migration_stop_requested" == false ]] && \
-      (( next_index <= total && ${#active_job_ids} < MAX_PARALLEL_TRANSFERS )); do
+      (( next_index <= total && ${#active_job_ids} < parallel_transfers )); do
       item_index=$next_index
       url="${urls[$item_index]}"
       (( next_index += 1 ))
@@ -730,6 +754,15 @@ self_test() {
   local second_url='http://sns-webpic-qc.xhscdn.com/path/image!variant'
   local third_url='https://media.xhscdn.com/path/third-image'
   local fourth_url='https://media.xhscdn.com/path/fourth-image'
+
+  set_parallel_transfers "" || return 1
+  (( parallel_transfers == 3 )) || return 1
+  set_parallel_transfers "10" || return 1
+  (( parallel_transfers == 10 )) || return 1
+  ! set_parallel_transfers "0" 2>/dev/null || return 1
+  ! set_parallel_transfers "11" 2>/dev/null || return 1
+  ! set_parallel_transfers "three" 2>/dev/null || return 1
+  parallel_transfers=3
 
   test_dir="$(/usr/bin/mktemp -d "${TMPDIR:-/tmp}/img-link-migrator-self-test.XXXXXX")" || return 1
   work_dir="$test_dir"

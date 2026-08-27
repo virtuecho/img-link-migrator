@@ -24,8 +24,8 @@ Markdown 图片语法，不会把文件中的每一个 URL 都当作图片。
 
 | `--provider` 取值 | 上传目标 | API key 环境变量 | API 基础 URL |
 | --- | --- | --- | --- |
+| `chevereto`（默认） | PicGo.net 或其他 Chevereto 站点 | `CHEVERETO_API_KEY` | 默认 `https://www.picgo.net`；CLI 可使用 `--chevereto-url` 修改。 |
 | `imgbb` | ImgBB | `IMGBB_API_KEY` | 固定使用 ImgBB API v1。 |
-| `chevereto` | PicGo.net 或其他 Chevereto 站点 | `CHEVERETO_API_KEY` | 默认 `https://www.picgo.net`；CLI 可使用 `--chevereto-url` 修改。 |
 
 不同平台使用互相隔离的缓存。切换上传目标时，不会复用其他平台保存的 URL 或图片
 内容哈希缓存。
@@ -77,7 +77,7 @@ python3 img_link_migrator.py --gui
 操作步骤：
 
 1. 选择一个 Markdown 文件或 vault 文件夹。
-2. 选择上传平台 **ImgBB** 或 **PicGo.net (Chevereto)**。
+2. 保留默认的 **PicGo.net (Chevereto)**，或者改选 **ImgBB**。
 3. 粘贴该平台的 API key。它只会保存在本次运行的内存中。
 4. 根据需要填写一个或多个来源域名，多个域名使用英文逗号分隔。
 5. 选择是否在修改文件前创建备份。
@@ -100,8 +100,8 @@ CLI 指在终端中输入命令。下面的命令需要在项目目录中执行�
 
 | 上传平台 | CLI 选择方式 | 环境变量 |
 | --- | --- | --- |
-| ImgBB | `--provider imgbb`，或者省略 `--provider` | `IMGBB_API_KEY` |
-| PicGo.net / Chevereto | `--provider chevereto` | `CHEVERETO_API_KEY` |
+| PicGo.net / Chevereto | `--provider chevereto`，或者省略 `--provider` | `CHEVERETO_API_KEY` |
+| ImgBB | `--provider imgbb` | `IMGBB_API_KEY` |
 
 设置变量的命令取决于当前 shell。先运行 `echo $SHELL`，然后只使用下面与当前 shell
 匹配的一组命令，并且只执行所选上传平台对应的输入行。
@@ -233,19 +233,19 @@ python3 img_link_migrator.py \
 python3 img_link_migrator.py "$HOME/Documents/MyVault"
 ```
 
-第二步，确认扫描结果后执行迁移。下面的默认写法使用 ImgBB，并读取
-`IMGBB_API_KEY`：
+第二步，确认扫描结果后执行迁移。下面的默认写法使用 PicGo.net，并读取
+`CHEVERETO_API_KEY`：
 
 ```bash
 python3 img_link_migrator.py --apply "$HOME/Documents/MyVault"
 ```
 
-如果改为上传到 PicGo.net，请设置 `CHEVERETO_API_KEY` 并选择 Chevereto：
+如果改为上传到 ImgBB，请设置 `IMGBB_API_KEY` 并显式选择 ImgBB：
 
 ```bash
 python3 img_link_migrator.py \
   --apply \
-  --provider chevereto \
+  --provider imgbb \
   "$HOME/Documents/MyVault"
 ```
 
@@ -312,7 +312,7 @@ CLI 有三种基本写法：
 | `目标路径` | 一个或多个 Markdown 文件或文件夹路径，不要输入单词 `targets`。 | 扫描和迁移模式必须有目标；单独运行程序会打开 GUI。 | `"$HOME/Documents/MyVault"`；多个目标写成 `"folder-a" "note-b.md"`。 |
 | `--gui` | 后面不填值。 | 使用 CLI；有目标时默认只扫描。 | `python3 img_link_migrator.py --gui` |
 | `--apply` | 后面不填值。 | 只扫描，不下载、不上传、不修改文件。 | `python3 img_link_migrator.py --apply "$HOME/Documents/MyVault"` |
-| `--provider NAME` | `NAME` 填 `imgbb` 或 `chevereto`。 | `imgbb` | `--provider chevereto` 选择 PicGo.net。 |
+| `--provider NAME` | `NAME` 填 `imgbb` 或 `chevereto`。 | `chevereto`，使用 PicGo.net | `--provider imgbb` 选择 ImgBB。 |
 | `--chevereto-url URL` | Chevereto 站点基础 URL。 | `https://www.picgo.net` | 其他站点示例：`--provider chevereto --chevereto-url "https://images.example.com"`。 |
 | `--api-key KEY` | 把 `KEY` 换成所选平台的 API key。 | 自动读取 `IMGBB_API_KEY` 或 `CHEVERETO_API_KEY`；缺少时无法迁移。 | `--api-key "YOUR_KEY"`；使用对应环境变量更安全。 |
 | `--expiration SECONDS` | 把 `SECONDS` 换成自动删除前的秒数。 | 默认 `0`，请求永久保存。 | 范围 `60`–`15552000`；Chevereto 会收到等价的 ISO 8601 时间段。 |
@@ -443,7 +443,8 @@ python3 -m py_compile img_link_migrator.py
 - 排除属于当前所选目标平台的现有链接。
 - 下载每个选中的 URL，并排除非图片内容以及超过 32 MB 的图片。
 - 每次下载和上传最多尝试四次，等待时间自动逐步延长。
-- 最多同时执行 3 个下载/上传任务；即使完成顺序不同，进度信息仍会显示各自的编号。
+- 可以选择同时执行 1–10 个下载/上传任务，默认 3 个；即使完成顺序不同，进度信息
+  仍会显示各自的编号。
 - 使用该单文件工具自己的持久化来源 URL 缓存。
 - 任一任务上传成功后，由主进程串行处理文件，并通过原子写入立即替换索引中的全部
   相同 URL。
@@ -468,24 +469,25 @@ YAML 属性区或代码块内符合来源域名的 URL 都可能被找到；下�
 
 程序只会要求填写以下内容：
 
-1. 选择上传到 ImgBB 或 PicGo.net。
+1. 保留默认的 PicGo.net，或者改选 ImgBB。
 2. 输入所选平台的 API key。本次运行中的输入内容会被隐藏。
 3. 把一个支持的文件或文件夹拖入终端，然后按回车。
-4. 选择来源域名。扫描结束后会立即开始迁移。
+4. 选择来源域名。
+5. 选择 1–10 个并行任务，或者直接按回车使用默认值 3。扫描结束后会立即开始迁移。
 
 上传平台提示如下：
 
 ```text
 Choose the upload service:
-  Press Return or type 1 for ImgBB.
-  Type 2 for PicGo.net (Chevereto API v1).
+  Press Return or type 1 for PicGo.net (Chevereto API v1).
+  Type 2 for ImgBB.
 Your choice [1]:
 ```
 
 | 输入 | 上传目标 |
 | --- | --- |
-| 直接按回车、`1` 或 `imgbb` | ImgBB |
-| `2`、`picgo`、`picgo.net` 或 `chevereto` | PicGo.net |
+| 直接按回车、`1`、`picgo`、`picgo.net` 或 `chevereto` | PicGo.net |
+| `2` 或 `imgbb` | ImgBB |
 
 选择 PicGo.net 时，程序使用 `X-API-Key` 请求头，把图片作为 `source` multipart
 字段发送到 `/api/1/upload`。
@@ -507,11 +509,26 @@ Your choice [xhscdn.com]:
 | `xhscdn.com,example.com` | 两个所列域名及其子域名中的 URL。 |
 | `*` | 所有域名中的 URL；只有成功下载并验证为图片的内容才会上传。 |
 
+并行任务提示如下：
+
+```text
+Choose how many image transfers can run at once:
+  Press Return to use 3.
+  Or enter a number from 1 to 10.
+Parallel transfers [3]:
+```
+
+| 输入 | 并行行为 |
+| --- | --- |
+| 直接按回车 | 最多同时执行 3 个任务。 |
+| `1` | 串行传输，文件原子写入行为不变。 |
+| `2`–`10` | 最多同时执行所填写数量的任务。 |
+
 程序不会再询问是否备份，也不会再询问是否开始。显示扫描数量后，只要存在匹配 URL，
 就会立即开始处理。
 
 迁移期间，`Downloading`、`Uploading`、`Uploaded` 和失败信息都会显示该任务的
-`[当前编号/总数]`。由于最多同时处理 3 个任务，完成顺序可能与编号顺序不同。
+`[当前编号/总数]`。由于可以同时处理多个任务，完成顺序可能与编号顺序不同。
 
 ### 单文件工具的替换安全
 
@@ -526,7 +543,7 @@ Your choice [xhscdn.com]:
 任何一步失败时，本次替换都不会覆盖该文件；此前已经成功完成的替换会保留在磁盘上。
 所有文件修改都由主进程逐个执行，因此并行传输任务不会同时写入同一个文件。
 
-第一次按下 `Control-C` 后，程序会停止派发新任务，等待当前最多 3 个任务完成，并把
+第一次按下 `Control-C` 后，程序会停止派发新任务，等待当前任务组完成，并把
 其中成功的结果全部原子写入后再退出。根据自动重试和网络超时情况，安全结束可能需要
 等待一段时间。
 
@@ -556,8 +573,8 @@ Your choice [xhscdn.com]:
 ### 单文件工具开发检查
 
 离线自检使用临时 `.txt`、`.md` 和 `.markdown` 文件，其中包含一个不符合 UTF-8
-编码的文件。它会在不发起网络请求的情况下验证 3 个 worker 队列、安全中断、缓存
-续传、索引替换和原子写入：
+编码的文件。它会在不发起网络请求的情况下验证 1–10 取值范围、3 个 worker 队列、
+安全中断、缓存续传、索引替换和原子写入：
 
 ```bash
 zsh -n img-link-migrator.command

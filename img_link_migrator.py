@@ -32,10 +32,11 @@ from typing import Callable, Dict, Iterable, List, Optional, Sequence, Set, Tupl
 
 
 APP_NAME = "IMG Link Migrator"
-APP_VERSION = "0.3.0"
+APP_VERSION = "0.4.0"
 ENV_IMGBB_API_KEY = "IMGBB_API_KEY"
 ENV_CHEVERETO_API_KEY = "CHEVERETO_API_KEY"
-DEFAULT_PROVIDER = "imgbb"
+DEFAULT_PROVIDER = "chevereto"
+IMGBB_CACHE_NAMESPACE = "imgbb"
 DEFAULT_CHEVERETO_URL = "https://www.picgo.net"
 MAX_IMAGE_BYTES = 32 * 1024 * 1024
 IMGBB_EXCLUDED_HOSTS = ("ibb.co", "i.ibb.co", "api.imgbb.com")
@@ -379,7 +380,7 @@ class StateStore:
 
     @staticmethod
     def _cache_key(value: str, namespace: str) -> str:
-        if namespace == DEFAULT_PROVIDER:
+        if namespace == IMGBB_CACHE_NAMESPACE:
             return value
         return "{}\0{}".format(namespace, value)
 
@@ -387,7 +388,7 @@ class StateStore:
         self,
         original_url: str,
         required_expiration: int = 0,
-        namespace: str = DEFAULT_PROVIDER,
+        namespace: str = IMGBB_CACHE_NAMESPACE,
     ) -> Optional[str]:
         with self._lock:
             urls = self.data.get("urls", {})
@@ -401,7 +402,7 @@ class StateStore:
         self,
         digest: str,
         required_expiration: int = 0,
-        namespace: str = DEFAULT_PROVIDER,
+        namespace: str = IMGBB_CACHE_NAMESPACE,
     ) -> Optional[str]:
         with self._lock:
             hashes = self.data.get("hashes", {})
@@ -417,7 +418,7 @@ class StateStore:
         digest: str,
         new_url: str,
         expiration: int,
-        namespace: str = DEFAULT_PROVIDER,
+        namespace: str = IMGBB_CACHE_NAMESPACE,
     ) -> None:
         now = time.time()
         entry = {
@@ -659,7 +660,7 @@ class BaseUploadClient:
 class ImgBBClient(BaseUploadClient):
     provider_name = "ImgBB"
     environment_variable = ENV_IMGBB_API_KEY
-    cache_namespace = DEFAULT_PROVIDER
+    cache_namespace = IMGBB_CACHE_NAMESPACE
 
     def upload(self, data: bytes, content_type: str, filename: str, url: str) -> str:
         def action() -> str:
@@ -898,7 +899,7 @@ class MigrationEngine:
         self.expiration = expiration
         self.backup_enabled = backup_enabled
         self.cache_namespace = cache_namespace or getattr(
-            client, "cache_namespace", DEFAULT_PROVIDER
+            client, "cache_namespace", IMGBB_CACHE_NAMESPACE
         )
 
     def _write_completed_url(
@@ -1197,7 +1198,7 @@ def _provider_cache_namespace(
     provider: str, chevereto_url: str = DEFAULT_CHEVERETO_URL
 ) -> str:
     if provider == "imgbb":
-        return DEFAULT_PROVIDER
+        return IMGBB_CACHE_NAMESPACE
     if provider == "chevereto":
         return "chevereto:{}".format(
             _normalize_chevereto_base_url(chevereto_url).lower()
@@ -1364,8 +1365,10 @@ class MigratorGUI:
         self.root.minsize(820, 560)
 
         self.target_var = tk.StringVar()
-        self.provider_var = tk.StringVar(value="ImgBB")
-        self.key_var = tk.StringVar(value=os.environ.get(ENV_IMGBB_API_KEY, ""))
+        self.provider_var = tk.StringVar(value="PicGo.net (Chevereto)")
+        self.key_var = tk.StringVar(
+            value=os.environ.get(ENV_CHEVERETO_API_KEY, "")
+        )
         self.include_var = tk.StringVar()
         self.expiration_var = tk.StringVar(value="0")
         self.retries_var = tk.StringVar(value="3")
@@ -1411,7 +1414,7 @@ class MigratorGUI:
         provider_box = ttk.Combobox(
             outer,
             textvariable=self.provider_var,
-            values=("ImgBB", "PicGo.net (Chevereto)"),
+            values=("PicGo.net (Chevereto)", "ImgBB"),
             state="readonly",
         )
         provider_box.grid(
@@ -1419,7 +1422,7 @@ class MigratorGUI:
         )
         provider_box.bind("<<ComboboxSelected>>", self._provider_changed)
 
-        self.key_label = ttk.Label(outer, text="ImgBB API key")
+        self.key_label = ttk.Label(outer, text="PicGo.net API key")
         self.key_label.grid(row=2, column=0, sticky="w", pady=4)
         ttk.Entry(outer, textvariable=self.key_var, show="*").grid(
             row=2, column=1, columnspan=3, sticky="ew", padx=8, pady=4
@@ -1783,7 +1786,7 @@ def _build_parser() -> argparse.ArgumentParser:
         "--provider",
         choices=("imgbb", "chevereto"),
         default=DEFAULT_PROVIDER,
-        help="Upload provider: imgbb or chevereto (default: imgbb)",
+        help="Upload provider: imgbb or chevereto (default: chevereto)",
     )
     parser.add_argument(
         "--chevereto-url",
