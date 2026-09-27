@@ -1301,33 +1301,117 @@ def _create_upload_client(
     raise MigrationError("Unsupported upload provider: {}".format(provider))
 
 
-def _cli_callback(event: Dict[str, object]) -> None:
-    kind = event.get("kind")
-    if kind == "retry":
-        print(
-            "  Automatic retry: {stage} attempt {next_attempt} starts in "
-            "{delay}s ({message})".format(
-                **event
-            ),
-            file=sys.stderr,
+class CLIProgress:
+    """Render interactive progress in place; keep redirected output readable."""
+
+    def __init__(self) -> None:
+        self.stream = sys.stdout
+        self.interactive = self.stream.isatty()
+        self.lock = threading.Lock()
+        self.total = 0
+        self.completed = 0
+        self.uploaded = 0
+        self.reused = 0
+        self.failed = 0
+        self.active: Dict[str, str] = {}
+        self.last_width = 0
+
+    @staticmethod
+    def _label(url: str) -> str:
+        parsed = urllib.parse.urlsplit(url)
+        name = pathlib.PurePosixPath(parsed.path).name
+        return "{}{}".format(parsed.hostname or url, "/" + name if name else "")
+
+    def _render(self) -> None:
+        if not self.interactive:
+            return
+        active = next(iter(self.active.values()), "idle")
+        line = (
+            "Progress {}/{} | uploaded {} | reused {} | failed {} | active: {}"
+        ).format(
+            self.completed,
+            self.total,
+            self.uploaded,
+            self.reused,
+            self.failed,
+            active,
         )
-    elif kind == "url_start":
-        print(
-            "[{}/{}] {}".format(
-                event.get("current"), event.get("total"), event.get("url")
-            )
-        )
-    elif kind == "url_done":
-        print("  {}: {}".format(event.get("status"), event.get("message")))
-    elif kind == "file_updated":
-        print("  Updated: {}".format(event.get("path")))
-    elif kind in {"warning", "write_failed"}:
-        print(
-            "Warning: {} {}".format(
-                event.get("path", ""), event.get("message")
-            ),
-            file=sys.stderr,
-        )
+        width = shutil.get_terminal_size((100, 20)).columns
+        if len(line) > width:
+            line = line[: max(0, width - 1)]
+        self.stream.write("\r" + " " * self.last_width + "\r" + line)
+        self.stream.flush()
+        self.last_width = len(line)
+
+    def _note(self, message: str) -> None:
+        if self.interactive:
+            self.stream.write("\r" + " " * self.last_width + "\r")
+            self.stream.flush()
+            self.last_width = 0
+        print(message, file=sys.stderr)
+        self._render()
+
+    def __call__(self, event: Dict[str, object]) -> None:
+        kind = event.get("kind")
+        with self.lock:
+            if kind == "discovered":
+                self.total = int(event.get("urls", 0) or 0)
+            elif kind == "url_start":
+                url = str(event.get("url", ""))
+                self.total = int(event.get("total", self.total) or self.total)
+                self.active[url] = "Processing " + self._label(url)
+                if not self.interactive:
+                    print(
+                        "[{}/{}] {}".format(
+                            event.get("current"), event.get("total"), url
+                        )
+                    )
+                self._render()
+            elif kind == "retry":
+                url = str(event.get("url", ""))
+                stage = str(event.get("stage", "transfer"))
+                self.active[url] = "Retrying {}: {}".format(
+                    stage.lower(), self._label(url)
+                )
+                message = (
+                    "Automatic retry: {stage} attempt {next_attempt} starts in "
+                    "{delay}s ({message})"
+                ).format(**event)
+                if not self.interactive:
+                    self._note(message)
+                else:
+                    self._render()
+            elif kind == "url_done":
+                url = str(event.get("url", ""))
+                status = str(event.get("status", ""))
+                self.active.pop(url, None)
+                self.completed += 1
+                if status == "uploaded":
+                    self.uploaded += 1
+                elif status in {"cached", "reused"}:
+                    self.reused += 1
+                elif status == "failed":
+                    self.failed += 1
+                if not self.interactive and status:
+                    self._note("  {}: {}".format(status, event.get("message", "")))
+                else:
+                    self._render()
+            elif kind == "file_updated":
+                if not self.interactive:
+                    self._note("  Updated: {}".format(event.get("path", "")))
+            elif kind in {"warning", "write_failed"}:
+                self._note(
+                    "Warning: {} {}".format(
+                        event.get("path", ""), event.get("message", "")
+                    )
+                )
+
+    def finish(self) -> None:
+        with self.lock:
+            if self.interactive and self.last_width:
+                self.stream.write("\n")
+                self.stream.flush()
+                self.last_width = 0
 
 
 def _run_cli(args: argparse.Namespace) -> int:
@@ -1343,11 +1427,12 @@ def _run_cli(args: argparse.Namespace) -> int:
     )
     state_root = pathlib.Path(args.state_dir) if args.state_dir else None
     store = StateStore(state_root)
+    cli_progress = CLIProgress()
     plans = scan_targets(
         targets,
         include_hosts=include_hosts,
         exclude_hosts=exclude_hosts,
-        callback=_cli_callback,
+        callback=cli_progress,
     )
     refs = [reference for plan in plans for reference in plan.references]
     urls = list(dict.fromkeys(reference.url for reference in refs))
@@ -1409,7 +1494,7 @@ def _run_cli(args: argparse.Namespace) -> int:
             args.api_key or os.environ.get(env_name, ""),
             args.expiration,
             args.retries,
-            _cli_callback,
+            cli_progress,
             cancel_event,
             chevereto_url=args.chevereto_url,
         )
@@ -1418,7 +1503,7 @@ def _run_cli(args: argparse.Namespace) -> int:
         client=client,
         include_hosts=include_hosts,
         exclude_hosts=exclude_hosts,
-        callback=_cli_callback,
+        callback=cli_progress,
         cancel_event=cancel_event,
         expiration=args.expiration,
         backup_enabled=not args.no_backup,
@@ -1428,8 +1513,11 @@ def _run_cli(args: argparse.Namespace) -> int:
         report = engine.run(targets, apply=args.apply, plans=plans)
     except KeyboardInterrupt:
         cancel_event.set()
-        print("\nTask cancelled.", file=sys.stderr)
+        cli_progress.finish()
+        print("Task cancelled.", file=sys.stderr)
         return 130
+    finally:
+        cli_progress.finish()
 
     summary = (
         "Scanned {files} file(s), found {refs} reference(s) / {urls} unique "

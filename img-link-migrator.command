@@ -61,6 +61,7 @@ request_migration_stop() {
   migration_stop_requested=true
   if [[ "$migration_stop_announced" == false ]]; then
     migration_stop_announced=true
+    clear_migration_progress
     print -u2 -r -- "Stop requested. Finishing active transfers and their file updates..."
   fi
 }
@@ -709,7 +710,6 @@ transfer_url_worker() {
 
   if [[ "$test_transfer_mode" == true ]]; then
     /bin/sleep "$test_transfer_delay"
-    print -r -- "[${item_index}/${total}] Uploading: $url"
     write_transfer_result \
       "$result_file" "uploaded" "https://test.invalid/image-${item_index}"
     return $?
@@ -730,13 +730,11 @@ transfer_url_worker() {
   }
   migrated_url="$(lookup_content_cache "$digest")"
   if [[ -n "$migrated_url" ]]; then
-    print -r -- "[${item_index}/${total}] Reusing identical content: $migrated_url"
     release_content_lock "$digest"
     write_transfer_result "$result_file" "reused" "$migrated_url"
     return $?
   fi
 
-  print -r -- "[${item_index}/${total}] Uploading: $url"
   migrated_url="$(upload_image "$image_file" "$response_file")"
   if [[ -z "$migrated_url" ]]; then
     release_content_lock "$digest"
@@ -772,6 +770,7 @@ replace_url_in_file() {
 
   current_hash="$(file_hash "$file")"
   if [[ "$current_hash" != "${fingerprints[$file]}" ]]; then
+    clear_migration_progress
     print -u2 -r -- "  Warning: file changed after scanning; skipped: $file"
     return 1
   fi
@@ -859,7 +858,6 @@ replace_url_in_file() {
   }
 
   fingerprints[$file]="$(file_hash "$file")"
-  print -r -- "  Updated: $file"
 }
 
 replace_url_in_indexed_files() {
@@ -1032,10 +1030,28 @@ show_scan_summary() {
   print -r -- "Starting migration..."
 }
 
+render_migration_progress() {
+  local completed="$1"
+  local total="$2"
+  local uploaded="$3"
+  local reused="$4"
+  local failed="$5"
+  local active="$6"
+
+  [[ -t 1 ]] || return 0
+  printf '\r\033[2KProgress %s/%s | up %s | cached %s | failed %s | active %s' \
+    "$completed" "$total" "$uploaded" "$reused" "$failed" "$active"
+}
+
+clear_migration_progress() {
+  [[ -t 1 ]] && printf '\r\033[2K'
+}
+
 run_migration() {
   local next_index=1
   local item_index
   local total=${#urls}
+  local completed=0
   local uploaded=0
   local reused=0
   local failed=0
@@ -1047,11 +1063,16 @@ run_migration() {
   local job_id
   local job_pid
   local completed_any
+  local active_text
+  local job_log
+  local log_line
+  local worker_label
   local -a failed_urls
   local -a active_job_ids
   local -A job_pids
   local -A job_urls
   local -A job_results
+  local -A job_logs
   failed_urls=()
 
   /bin/mkdir -p -- "$state_dir" || return 1
@@ -1070,18 +1091,20 @@ run_migration() {
 
       migrated_url="$(lookup_cache "$url")"
       if [[ -n "$migrated_url" ]]; then
-        print -r -- "[${item_index}/${total}] Cached: $url"
-        print -r -- "  Reused cached URL: $migrated_url"
         (( reused += 1 ))
         if ! replace_url_in_indexed_files "$url" "$migrated_url"; then
           (( failed += 1 ))
           failed_urls+=("$url")
         fi
+        (( completed += 1 ))
+        active_text="${#active_job_ids}"
+        render_migration_progress "$completed" "$total" "$uploaded" \
+          "$reused" "$failed" "$active_text"
         continue
       fi
 
-      print -r -- "[${item_index}/${total}] Downloading: $url"
       result_file="${work_dir}/transfer-${item_index}.result"
+      job_log="${work_dir}/transfer-${item_index}.log"
       (
         trap '' INT TERM
         transfer_url_worker "$url" "$item_index" "$total" "$result_file"
@@ -1090,12 +1113,16 @@ run_migration() {
           write_transfer_result "$result_file" "worker_failed"
         fi
         exit "$job_status"
-      ) &
+      ) > "$job_log" 2>&1 &
       job_pid=$!
       active_job_ids+=("$item_index")
       job_pids[$item_index]="$job_pid"
       job_urls[$item_index]="$url"
       job_results[$item_index]="$result_file"
+      job_logs[$item_index]="$job_log"
+      active_text="${#active_job_ids}"
+      render_migration_progress "$completed" "$total" "$uploaded" \
+        "$reused" "$failed" "$active_text"
     done
 
     if (( ${#active_job_ids} == 0 )); then
@@ -1110,18 +1137,30 @@ run_migration() {
       wait "${job_pids[$job_id]}" 2>/dev/null
       IFS=$'\t' read -r result_status migrated_url < "$result_file"
       url="${job_urls[$job_id]}"
+      job_log="${job_logs[$job_id]}"
+      if [[ -s "$job_log" ]]; then
+        clear_migration_progress
+        worker_label="[${job_id}/${total}]"
+        while IFS= read -r log_line; do
+          [[ -n "$log_line" ]] || continue
+          if [[ "$log_line" == "${worker_label}"* ]]; then
+            print -u2 -r -- "$log_line"
+          else
+            print -u2 -r -- "${worker_label} ${log_line}"
+          fi
+        done < "$job_log"
+      fi
 
       if [[ ( "$result_status" == "uploaded" || "$result_status" == "reused" ) && \
         -n "$migrated_url" ]]; then
         if ! record_cache "$url" "$migrated_url"; then
+          clear_migration_progress
           print -u2 -r -- "  Warning: could not record the migration cache."
         fi
         if [[ "$result_status" == "reused" ]]; then
           (( reused += 1 ))
-          print -r -- "[${job_id}/${total}] Reused: $migrated_url"
         else
           (( uploaded += 1 ))
-          print -r -- "[${job_id}/${total}] Uploaded: $migrated_url"
         fi
         if ! replace_url_in_indexed_files "$url" "$migrated_url"; then
           (( failed += 1 ))
@@ -1130,6 +1169,7 @@ run_migration() {
       else
         (( failed += 1 ))
         failed_urls+=("$url")
+        clear_migration_progress
         case "$result_status" in
           download_failed)
             print -u2 -r -- "[${job_id}/${total}] Failed: download"
@@ -1144,7 +1184,12 @@ run_migration() {
       fi
 
       active_job_ids=("${(@)active_job_ids:#${job_id}}")
-      unset "job_pids[$job_id]" "job_urls[$job_id]" "job_results[$job_id]"
+      unset "job_pids[$job_id]" "job_urls[$job_id]" \
+        "job_results[$job_id]" "job_logs[$job_id]"
+      (( completed += 1 ))
+      active_text="${#active_job_ids}"
+      render_migration_progress "$completed" "$total" "$uploaded" \
+        "$reused" "$failed" "$active_text"
       completed_any=true
     done
 
@@ -1153,6 +1198,7 @@ run_migration() {
     fi
   done
 
+  clear_migration_progress
   print
   if [[ "$migration_stop_requested" == true ]]; then
     print -r -- "Stopped after active transfers completed: uploaded ${uploaded}, reused ${reused}, failed ${failed}."

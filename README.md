@@ -257,6 +257,9 @@ The scan prints numbered source domains and URL counts instead of dumping every
 candidate link. In an interactive terminal, enter a domain number to inspect
 that domain's URLs; press Return to continue.
 
+During migration, the interactive CLI updates one progress line in place. The
+GUI keeps progress in its per-image status table.
+
 Then apply the migration after checking the scan output:
 
 ```bash
@@ -568,9 +571,9 @@ and URL counts. Enter a domain number to list its candidate image URLs; press
 Return when done, then enter `y` or `yes` to proceed. The completion summary
 lists every failed URL.
 
-During migration, `Downloading`, `Uploading`, `Uploaded`, and failure messages
-include the item's `[current/total]` number. The completion order can differ
-because multiple transfers can run at once.
+In an interactive terminal, migration progress stays on one line with completed,
+uploaded, reused, failed, and active-transfer counts. Failure details remain
+separate so they are easy to find.
 
 ### Standalone replacement safety
 
