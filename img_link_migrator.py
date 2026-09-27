@@ -1351,10 +1351,11 @@ def _run_cli(args: argparse.Namespace) -> int:
     )
     refs = [reference for plan in plans for reference in plan.references]
     urls = list(dict.fromkeys(reference.url for reference in refs))
-    domains: Dict[str, int] = {}
+    domain_urls: Dict[str, List[str]] = {}
     for url in urls:
         host = urllib.parse.urlsplit(url).hostname or "unknown"
-        domains[host.lower()] = domains.get(host.lower(), 0) + 1
+        domain_urls.setdefault(host.lower(), []).append(url)
+    domains = sorted(domain_urls)
 
     print(
         "Scanned {} file(s), found {} image reference(s) / {} unique URL(s).".format(
@@ -1362,10 +1363,29 @@ def _run_cli(args: argparse.Namespace) -> int:
         )
     )
     print("Image source domains:")
-    for host in sorted(domains):
-        print("  {} ({} unique URL(s))".format(host, domains[host]))
-    for reference in refs:
-        print("{}\t{}".format(reference.path, reference.url))
+    for index, host in enumerate(domains, 1):
+        print("  {}. {} ({} unique URL(s))".format(
+            index, host, len(domain_urls[host])
+        ))
+
+    if domains and sys.stdin.isatty() and not (args.apply and args.yes):
+        while True:
+            try:
+                choice = input(
+                    "Enter a domain number to list its image URLs, or press "
+                    "Return to continue: "
+                ).strip()
+            except EOFError:
+                break
+            if not choice:
+                break
+            if not choice.isdigit() or not 1 <= int(choice) <= len(domains):
+                print("Enter a number from 1 to {} or press Return.".format(len(domains)))
+                continue
+            host = domains[int(choice) - 1]
+            print("Image URL candidates for {}:".format(host))
+            for url in domain_urls[host]:
+                print("  {}".format(url))
 
     if args.apply and urls and not args.yes:
         if not sys.stdin.isatty():
@@ -1483,9 +1503,12 @@ class MigratorGUI:
         self.worker: Optional[threading.Thread] = None
         self.last_failed: Set[str] = set()
         self.last_domains: Tuple[str, ...] = ()
+        self.last_domain_urls: Dict[str, List[str]] = {}
         self.last_scan_urls: Set[str] = set()
         self.last_scan_target: Optional[pathlib.Path] = None
         self.has_scan = False
+        self.apply_run = False
+        self.domain_choice_var = tk.StringVar()
         self.rows: Dict[str, str] = {}
 
         self._build()
@@ -1498,7 +1521,7 @@ class MigratorGUI:
         outer = ttk.Frame(root, padding=14)
         outer.pack(fill="both", expand=True)
         outer.columnconfigure(1, weight=1)
-        outer.rowconfigure(8, weight=1)
+        outer.rowconfigure(10, weight=1)
 
         ttk.Label(outer, text="File or directory").grid(
             row=0, column=0, sticky="w", pady=4
@@ -1581,9 +1604,34 @@ class MigratorGUI:
         )
         self.cancel_button.pack(side="right")
 
+        domain_frame = ttk.LabelFrame(outer, text="Image source domains", padding=6)
+        domain_frame.grid(row=7, column=0, columnspan=5, sticky="ew", pady=(4, 6))
+        domain_frame.columnconfigure(0, weight=1)
+        self.domain_text = self.tk.Text(
+            domain_frame, height=4, wrap="none", state="disabled"
+        )
+        self.domain_text.grid(row=0, column=0, sticky="ew")
+        domain_scrollbar = ttk.Scrollbar(
+            domain_frame, orient="vertical", command=self.domain_text.yview
+        )
+        domain_scrollbar.grid(row=0, column=1, sticky="ns")
+        self.domain_text.configure(yscrollcommand=domain_scrollbar.set)
+
+        inspect_frame = ttk.Frame(outer)
+        inspect_frame.grid(row=8, column=0, columnspan=5, sticky="ew", pady=(0, 4))
+        ttk.Label(inspect_frame, text="Domain number").pack(side="left")
+        ttk.Entry(
+            inspect_frame, textvariable=self.domain_choice_var, width=8
+        ).pack(side="left", padx=6)
+        ttk.Button(
+            inspect_frame,
+            text="Show candidate URLs",
+            command=self._show_domain_urls,
+        ).pack(side="left")
+
         ttk.Progressbar(
             outer, variable=self.progress_var, maximum=100, mode="determinate"
-        ).grid(row=7, column=0, columnspan=4, sticky="ew", pady=(4, 8))
+        ).grid(row=9, column=0, columnspan=4, sticky="ew", pady=(4, 8))
 
         columns = ("status", "url", "file", "detail")
         self.tree = ttk.Treeview(outer, columns=columns, show="headings")
@@ -1595,13 +1643,13 @@ class MigratorGUI:
         self.tree.column("url", width=370)
         self.tree.column("file", width=260)
         self.tree.column("detail", width=250)
-        self.tree.grid(row=8, column=0, columnspan=4, sticky="nsew")
+        self.tree.grid(row=10, column=0, columnspan=4, sticky="nsew")
         scrollbar = ttk.Scrollbar(outer, orient="vertical", command=self.tree.yview)
-        scrollbar.grid(row=8, column=4, sticky="ns")
+        scrollbar.grid(row=10, column=4, sticky="ns")
         self.tree.configure(yscrollcommand=scrollbar.set)
 
         ttk.Label(outer, textvariable=self.summary_var, anchor="w").grid(
-            row=9, column=0, columnspan=4, sticky="ew", pady=(8, 0)
+            row=11, column=0, columnspan=4, sticky="ew", pady=(8, 0)
         )
 
     def _provider_id(self) -> str:
@@ -1670,7 +1718,12 @@ class MigratorGUI:
     def _scan(self) -> None:
         self.has_scan = False
         self.last_domains = ()
+        self.last_domain_urls = {}
         self.last_scan_urls = set()
+        self.domain_choice_var.set("")
+        self.domain_text.configure(state="normal")
+        self.domain_text.delete("1.0", "end")
+        self.domain_text.configure(state="disabled")
         self.last_scan_target = pathlib.Path(
             self.target_var.get().strip()
         ).expanduser().resolve()
@@ -1691,7 +1744,14 @@ class MigratorGUI:
         if not self.last_domains:
             self.messagebox.showinfo(APP_NAME, "The last scan found no image links.")
             return
-        domains = "\n".join("  " + host for host in self.last_domains)
+        domains = "\n".join(
+            "  {}. {} ({} unique URL(s))".format(
+                index,
+                host,
+                len(self.last_domain_urls.get(host, [])),
+            )
+            for index, host in enumerate(self.last_domains, 1)
+        )
         if not self.messagebox.askyesno(
             "Confirm migration",
             "Detected image source domains:\n{}\n\n"
@@ -1705,6 +1765,51 @@ class MigratorGUI:
         ):
             return
         self._start(True, set(self.last_scan_urls))
+
+    def _show_domain_urls(self) -> None:
+        if not self.has_scan:
+            self.messagebox.showinfo(APP_NAME, "Scan files before inspecting a domain.")
+            return
+        if not self.last_domains:
+            self.messagebox.showinfo(APP_NAME, "The scan found no image source domains.")
+            return
+        try:
+            index = int(self.domain_choice_var.get().strip())
+        except ValueError:
+            self.messagebox.showinfo(APP_NAME, "Enter a domain number from the list.")
+            return
+        if not 1 <= index <= len(self.last_domains):
+            self.messagebox.showinfo(
+                APP_NAME,
+                "Enter a number from 1 to {}.".format(len(self.last_domains)),
+            )
+            return
+
+        host = self.last_domains[index - 1]
+        urls = self.last_domain_urls.get(host, [])
+        window = self.tk.Toplevel(self.root)
+        window.title("Image URLs from {}".format(host))
+        window.geometry("900x500")
+        window.columnconfigure(0, weight=1)
+        window.rowconfigure(0, weight=1)
+        text = self.tk.Text(window, wrap="none")
+        text.grid(row=0, column=0, sticky="nsew")
+        y_scrollbar = self.ttk.Scrollbar(
+            window, orient="vertical", command=text.yview
+        )
+        y_scrollbar.grid(row=0, column=1, sticky="ns")
+        x_scrollbar = self.ttk.Scrollbar(
+            window, orient="horizontal", command=text.xview
+        )
+        x_scrollbar.grid(row=1, column=0, sticky="ew")
+        text.configure(
+            yscrollcommand=y_scrollbar.set,
+            xscrollcommand=x_scrollbar.set,
+            state="normal",
+        )
+        text.insert("1.0", "\n".join(urls))
+        text.configure(state="disabled")
+        self.domain_choice_var.set("")
 
     def _retry_failed(self) -> None:
         if self.last_failed:
@@ -1727,6 +1832,7 @@ class MigratorGUI:
             self.messagebox.showerror(APP_NAME, str(exc))
             return
         self.cancel_event = threading.Event()
+        self.apply_run = apply
         self.progress_var.set(0)
         self.summary_var.set(
             "{} in progress...".format("Migration" if apply else "Scan")
@@ -1794,25 +1900,41 @@ class MigratorGUI:
     def _handle_event(self, event: Dict[str, object]) -> None:
         kind = event.get("kind")
         if kind == "discovered":
+            if self.apply_run:
+                return
             items = event.get("items", [])
-            domains: Set[str] = set()
+            domain_urls: Dict[str, Set[str]] = {}
             urls: Set[str] = set()
             if isinstance(items, list):
                 for item in items:
                     if isinstance(item, dict):
                         url = str(item.get("url", ""))
                         urls.add(url)
-                        self._row_for(url, str(item.get("path", "")))
                         host = urllib.parse.urlsplit(url).hostname
                         if host:
-                            domains.add(host.lower())
-            self.last_domains = tuple(sorted(domains))
+                            domain_urls.setdefault(host.lower(), set()).add(url)
+            self.last_domains = tuple(sorted(domain_urls))
+            self.last_domain_urls = {
+                host: sorted(domain_urls[host]) for host in self.last_domains
+            }
             self.last_scan_urls = urls
             self.has_scan = True
-            domain_text = ", ".join(self.last_domains) or "none"
+            self.domain_text.configure(state="normal")
+            self.domain_text.delete("1.0", "end")
+            for index, host in enumerate(self.last_domains, 1):
+                self.domain_text.insert(
+                    "end",
+                    "{}. {} ({} unique URL(s))\n".format(
+                        index, host, len(self.last_domain_urls[host])
+                    ),
+                )
+            self.domain_text.configure(state="disabled")
             self.summary_var.set(
-                "Found {} unique image URL(s) across {} reference(s). Domains: {}".format(
-                    event.get("urls", 0), event.get("references", 0), domain_text
+                "Found {} unique image URL(s) across {} reference(s) in {} domain(s). "
+                "Enter a domain number to inspect its URLs.".format(
+                    event.get("urls", 0),
+                    event.get("references", 0),
+                    len(self.last_domains),
                 )
             )
         elif kind == "url_start":
@@ -1861,6 +1983,7 @@ class MigratorGUI:
                 elif kind == "done":
                     report = payload
                     assert isinstance(report, MigrationReport)
+                    self.apply_run = False
                     self.last_failed = set(report.failed_urls)
                     self._set_busy(False)
                     self.progress_var.set(100 if not report.cancelled else self.progress_var.get())
@@ -1890,6 +2013,7 @@ class MigratorGUI:
                             APP_NAME, "All failed image URLs:\n\n" + failures
                         )
                 elif kind == "error":
+                    self.apply_run = False
                     self._set_busy(False)
                     self.messagebox.showerror(APP_NAME, str(payload))
                     self.summary_var.set("Task failed: {}".format(payload))

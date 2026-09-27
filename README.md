@@ -101,7 +101,8 @@ Then:
 4. Optionally enter one or more source domains, separated by commas.
 5. Choose whether changed files should be backed up.
 6. Click **Scan** to preview the detected links.
-7. Review the source domains shown by the scan, then click **Start migration**
+7. Review the numbered source-domain list. To inspect links for one domain,
+   enter its number and click **Show candidate URLs**. Click **Start migration**
    and confirm before uploads begin.
 8. If any item fails, click **Retry failed**.
 
@@ -252,6 +253,10 @@ First, scan without downloading, uploading, or changing files:
 python3 img_link_migrator.py "$HOME/Documents/MyVault"
 ```
 
+The scan prints numbered source domains and URL counts instead of dumping every
+candidate link. In an interactive terminal, enter a domain number to inspect
+that domain's URLs; press Return to continue.
+
 Then apply the migration after checking the scan output:
 
 ```bash
@@ -314,7 +319,7 @@ Notation used in command references:
 
 | Mode | Network requests | File changes | Use case |
 |---|---:|---:|---|
-| A target without `--apply` | No | No | Scan and print detected external image links. |
+| A target without `--apply` | No | No | Scan and print numbered source domains; inspect URLs by domain number. |
 | `--apply` | Yes | Yes, for successful uploads | Run the migration from the terminal. |
 | `--gui` | Only after starting a migration | Only after confirmation | Open the desktop interface and choose the target there. |
 
@@ -515,7 +520,8 @@ The program asks only for the following information:
 2. Enter that service's API key. Typing is hidden for the current run.
 3. Drag one supported file or directory into Terminal and press Return.
 4. Choose the source domains.
-5. Review the discovered image URLs and source domains; enter `y` to start.
+5. Review the numbered source domains. Enter a domain number to list its image
+   URLs; press Return when done, then enter `y` to start migration.
 
 The upload-service prompt is:
 
@@ -557,9 +563,10 @@ upload request starts are spaced 1.21 seconds apart, keeping the rate below 50
 requests per minute; retries use the same schedule. A rate-limit response
 pauses all upload workers for 60 seconds and then retry continues automatically.
 
-There is no backup step. After scanning, the tool lists the source domains and
-candidate image URLs and waits for confirmation; enter `y` or `yes` to proceed.
-The completion summary lists every failed URL.
+There is no backup step. After scanning, the tool lists numbered source domains
+and URL counts. Enter a domain number to list its candidate image URLs; press
+Return when done, then enter `y` or `yes` to proceed. The completion summary
+lists every failed URL.
 
 During migration, `Downloading`, `Uploading`, `Uploaded`, and failure messages
 include the item's `[current/total]` number. The completion order can differ

@@ -961,6 +961,10 @@ show_scan_summary() {
   local url
   local host
   local start_input
+  local domain_choice
+  local selected_host
+  local index
+  local -a sorted_domains
   local -A domain_counts
 
   source_description="${(j:, :)source_hosts}"
@@ -981,18 +985,35 @@ show_scan_summary() {
   print -r -- "Upload service: $provider_name"
   print -r -- "Upload request limit: ${UPLOADS_PER_MINUTE} per minute"
   print -r -- "Selected domains: $source_description"
-  print -r -- "Image source domains:"
+  print -r -- "Image source domains (enter a number to inspect its URLs):"
   if (( ${#domain_counts} == 0 )); then
     print -r -- "  (none)"
   else
-    for host in ${(ok)domain_counts}; do
-      print -r -- "  ${host} (${domain_counts[$host]} unique URL(s))"
+    sorted_domains=(${(ok)domain_counts})
+    for (( index = 1; index <= ${#sorted_domains}; index++ )); do
+      host="${sorted_domains[$index]}"
+      print -r -- "  ${index}. ${host} (${domain_counts[$host]} unique URL(s))"
     done
   fi
-  if (( ${#urls} > 0 )); then
-    print -r -- "Image URL candidates:"
-    for url in "${urls[@]}"; do
-      print -r -- "  ${url}"
+
+  if (( ${#sorted_domains} > 0 )); then
+    while true; do
+      read -r "domain_choice?Enter a domain number to list its image URLs, or Return to continue: "
+      [[ -z "$domain_choice" ]] && break
+      if [[ ! "$domain_choice" =~ '^[0-9]+$' ]] || \
+        (( domain_choice < 1 || domain_choice > ${#sorted_domains} )); then
+        print -r -- "Enter a number from 1 to ${#sorted_domains}, or press Return."
+        continue
+      fi
+      selected_host="${sorted_domains[$domain_choice]}"
+      print
+      print -r -- "Image URL candidates for ${selected_host}:"
+      for url in "${urls[@]}"; do
+        if [[ "$url" =~ '^https?://([^/:?#]+)' ]] && \
+          [[ "${match[1]:l}" == "$selected_host" ]]; then
+          print -r -- "  ${url}"
+        fi
+      done
     done
   fi
   print
