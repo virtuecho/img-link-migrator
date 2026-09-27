@@ -5,8 +5,8 @@
 This repository contains two independent image-link migration programs:
 
 1. A Python Markdown GUI/CLI in `img_link_migrator.py`.
-2. A self-contained macOS program in `img-link-migrator.command` for raw image
-   URLs in text and Markdown files.
+2. A self-contained macOS program in `img-link-migrator.command` for Markdown
+   image syntax in `.txt`, `.md`, and `.markdown` files.
 
 Each program has its own runtime, scanning rules, prompts, cache, and safety
 behavior. The documentation for one program does not apply to the other.
@@ -51,15 +51,15 @@ field to `/api/1/upload`. A custom Chevereto site selected with
 
 ### Python features
 
-- Select one Markdown file or a whole folder from a native GUI.
+- Select one `.txt`, `.md`, or `.markdown` file or a whole folder from a native GUI.
 - Scan safely before making changes.
 - Migrate every external image host or restrict migration to selected domains.
-- Recognize inline Markdown images, HTML `<img>` elements, and Markdown
-  reference-style images.
+- Recognize only Markdown images such as `![Alt](URL)` (including empty alt
+  text as `![](URL)`), referenced Markdown images, and HTML `<img src="URL">`.
 - Skip YAML frontmatter, fenced code blocks, inline code, hidden folders, and
   existing links from the selected destination.
-- Download and validate each source image and enforce a 32 MB local safety
-  limit.
+- Download each selected URL and enforce a 32 MB local size limit without
+  checking downloaded bytes for image signatures.
 - Show per-image progress, cache reuse, success, and failure details.
 - Limit both providers to no more than 50 upload requests per minute.
 - Retry automatically, with manual retry available in the GUI.
@@ -95,13 +95,14 @@ python3 img_link_migrator.py --gui
 
 Then:
 
-1. Choose a Markdown file or vault folder.
+1. Choose a `.txt`, `.md`, or `.markdown` file or vault folder.
 2. Keep the default **PicGo.net (Chevereto)** provider or select **ImgBB**.
 3. Paste that provider's API key. It is kept in memory for the current run.
 4. Optionally enter one or more source domains, separated by commas.
 5. Choose whether changed files should be backed up.
 6. Click **Scan** to preview the detected links.
-7. Click **Start migration** to upload and replace successful links.
+7. Review the source domains shown by the scan, then click **Start migration**
+   and confirm before uploads begin.
 8. If any item fails, click **Retry failed**.
 
 The domain field can be left empty to migrate images from every external host.
@@ -231,7 +232,7 @@ python3 img_link_migrator.py \
 
 #### What the target path means
 
-The target is the Markdown file or directory to scan:
+The target is a `.txt`, `.md`, or `.markdown` file or directory to scan:
 
 - `./note.md` means `note.md` in the current directory.
 - `./notes` means a child directory named `notes`. It is only an example.
@@ -324,9 +325,10 @@ no value: writing the flag enables its behavior.
 
 | Argument | What to enter | When omitted | Purpose and example |
 |---|---|---|---|
-| Target path | One or more Markdown files or directories; do not type the word `targets`. | Scan/apply requires a target; running with no arguments opens the GUI. | `"$HOME/Documents/MyVault"` or `"note.md"` |
+| Target path | One or more `.txt`, `.md`, or `.markdown` files or directories; do not type the word `targets`. | Scan/apply requires a target; running with no arguments opens the GUI. | `"$HOME/Documents/MyVault"` or `"note.md"` |
 | `--gui` | Flag; enter no value after it. | Use CLI behavior. | `python3 img_link_migrator.py --gui` |
 | `--apply` | Flag; enter no value after it. | Scan only. | `python3 img_link_migrator.py --apply "$HOME/Documents/MyVault"` |
+| `--yes` | Flag; enter no value after it. | `--apply` scans and shows domains, then asks for confirmation. | Confirm without a prompt: `python3 img_link_migrator.py --apply --yes "$HOME/Documents/MyVault"`. |
 | `--provider NAME` | Use `imgbb` or `chevereto`. | `chevereto`, using PicGo.net | `--provider imgbb` selects ImgBB. |
 | `--chevereto-url URL` | Chevereto site base URL. | `https://www.picgo.net` | For another installation: `--provider chevereto --chevereto-url "https://images.example.com"`. |
 | `--api-key KEY` | Replace `KEY` with the selected provider's API key. | Read `IMGBB_API_KEY` or `CHEVERETO_API_KEY`; apply fails if missing. | `--api-key "YOUR_KEY"`; the matching environment variable is safer. |
@@ -366,22 +368,27 @@ keys.
 
 ```markdown
 ![alt text](https://example.com/image.png)
+![](https://example.com/image-without-alt.png)
 
 <img src="https://example.com/image.jpg" alt="Example">
+<img src=https://example.com/unquoted-image.jpg alt="Example">
 
 ![alt text][image-id]
 [image-id]: https://example.com/image.webp
 ```
 
 Normal links such as `[website](https://example.com/)` are intentionally not
-treated as images.
+treated as images. Obsidian's local attachment embeds such as `![[image.png]]`
+are left alone; externally hosted images use Markdown image syntax like
+`![](URL)`.
 
 ### Python safety model
 
 The migration pipeline is:
 
 1. Scan Markdown and collect replaceable image URLs.
-2. Download and validate the first unique source image.
+2. Download the first unique source URL, enforcing the 32 MB size limit without
+   validating the downloaded content as an image.
 3. Reuse a valid cache entry for the selected provider when possible;
    otherwise upload the image.
 4. As soon as that image is ready, process every Markdown file referencing it:
@@ -439,7 +446,8 @@ The tests use fake ImgBB and Chevereto responses and do not perform uploads.
 
 ### Python tool limitations
 
-- The Python GUI/CLI modifies only UTF-8 `.md` and `.markdown` files.
+- The Python GUI/CLI modifies UTF-8 `.txt`, `.md`, and `.markdown` files using
+  the same Markdown image syntax rules.
 - Source images that require an authenticated browser session may fail to
   download. Xiaohongshu CDN requests automatically include the Xiaohongshu
   website as the HTTP referrer, which is sufficient for many public links.
@@ -458,7 +466,7 @@ runtime it neither reads nor launches `img_link_migrator.py`.
 - Accept one `.txt`, `.md`, or `.markdown` file, or one directory.
 - Search a directory recursively while skipping hidden files and directories.
 - Scan file bytes directly without testing or converting the text encoding.
-- Find `http://` and `https://` URLs anywhere in supported files.
+- Scan Markdown image syntax in `.txt`, `.md`, and `.markdown` files.
 - Filter URLs by source domain; the default is `xhscdn.com` and its subdomains.
 - Build a URL-to-files index during the initial scan so a completed upload only
   checks files that originally contained that URL.
@@ -468,8 +476,8 @@ runtime it neither reads nor launches `img_link_migrator.py`.
 - Treat a PicGo.net `Duplicated upload` response containing a valid image URL as
   successful reuse instead of failure.
 - Exclude existing links belonging to the selected destination.
-- Download each selected URL and reject content that is not an image or is
-  larger than 32 MB.
+- Download each selected URL and reject empty content or files larger than
+  32 MB.
 - Retry each download and upload up to four total attempts with automatic
   backoff.
 - Limit both providers to no more than 50 upload requests per minute, including
@@ -479,18 +487,18 @@ runtime it neither reads nor launches `img_link_migrator.py`.
   There is no worker-count question.
 - Reuse its own persistent source-URL cache.
 - As each transfer succeeds, serialize its file updates and immediately replace
-  every indexed occurrence with atomic file writes.
+  indexed image links with atomic file writes.
 
-The standalone scanner is deliberately syntax-independent. In Markdown files,
-it can find selected-domain URLs in image syntax, plain text, frontmatter, or
-code blocks. Image validation prevents non-image downloads from being uploaded.
-Use the Python program when Markdown-aware parsing rules are needed.
+In all supported files, the standalone tool scans only Markdown images such as
+`![Alt](URL)` (including `![](URL)`), used reference-style images, and HTML
+`<img src="URL">`; it skips frontmatter, code blocks, and inline code. It does
+not inspect downloaded bytes to decide whether a link is an image.
 
 ### Standalone requirements
 
 - macOS
 - An API key for ImgBB or PicGo.net
-- The macOS system `zsh`, `curl`, `plutil`, `file`, `Perl`, and related command
+- The macOS system `zsh`, `curl`, `plutil`, `Perl`, and related command
   line tools
 
 ### Run the standalone tool
@@ -506,7 +514,8 @@ The program asks only for the following information:
 1. Keep the default PicGo.net service or select ImgBB.
 2. Enter that service's API key. Typing is hidden for the current run.
 3. Drag one supported file or directory into Terminal and press Return.
-4. Choose the source domains. After scanning, migration starts immediately.
+4. Choose the source domains.
+5. Review the discovered image URLs and source domains; enter `y` to start.
 
 The upload-service prompt is:
 
@@ -531,7 +540,7 @@ The source explanation displayed by the program is:
 Choose where the original image links come from:
   Press Return to use xhscdn.com and its subdomains.
   Or type domains separated by commas: xhscdn.com,example.com
-  Or type * to check every domain; non-image URLs are skipped.
+  Or type * to check every domain; scanning still requires image syntax.
 Your choice [xhscdn.com]:
 ```
 
@@ -540,7 +549,7 @@ Your choice [xhscdn.com]:
 | Press Return without typing | URLs from `xhscdn.com` and any of its subdomains. |
 | `example.com` | URLs from `example.com` and its subdomains. |
 | `xhscdn.com,example.com` | URLs from either listed domain and their subdomains. |
-| `*` | URLs from every domain; only valid downloaded images are uploaded. |
+| `*` | Image-syntax URLs from every domain. |
 
 There is no worker-count question. The tool automatically overlaps up to three
 downloads, but all workers share one upload schedule. PicGo.net and ImgBB
@@ -548,8 +557,9 @@ upload request starts are spaced 1.21 seconds apart, keeping the rate below 50
 requests per minute; retries use the same schedule. A rate-limit response
 pauses all upload workers for 60 seconds and then retry continues automatically.
 
-There is no backup question and no start-confirmation question. The scan count
-is displayed and processing begins immediately when matching URLs exist.
+There is no backup step. After scanning, the tool lists the source domains and
+candidate image URLs and waits for confirmation; enter `y` or `yes` to proceed.
+The completion summary lists every failed URL.
 
 During migration, `Downloading`, `Uploading`, `Uploaded`, and failure messages
 include the item's `[current/total]` number. The completion order can differ
@@ -585,12 +595,12 @@ keys. Moving the `.command` file does not affect these caches.
 
 ### Standalone example
 
-This content works in both text and Markdown files:
+This image syntax works in all supported files:
 
 ```text
 Images
 ------------------------
-1. https://sns-webpic-qc.xhscdn.com/path/to/image
+1. ![](https://sns-webpic-qc.xhscdn.com/path/to/image)
 ```
 
 After a successful upload, only the URL changes:

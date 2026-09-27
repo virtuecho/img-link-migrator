@@ -5,8 +5,8 @@
 本仓库包含两个互相独立的图片链接迁移程序：
 
 1. `img_link_migrator.py`：Python Markdown GUI/CLI。
-2. `img-link-migrator.command`：处理文本和 Markdown 文件中裸图片 URL 的 macOS
-   单文件程序。
+2. `img-link-migrator.command`：处理 `.txt`、`.md` 和 `.markdown` 文件中
+   Markdown 图片语法的 macOS 单文件程序。
 
 两个程序分别拥有自己的运行环境、扫描规则、输入提示、缓存和安全行为。一套程序的
 文档不适用于另一套程序。两个程序都支持以下上传目标：
@@ -17,7 +17,8 @@
 
 ## Python Markdown GUI/CLI
 
-Python 程序主要面向 Obsidian vault 和其他 UTF-8 Markdown 文件。它理解常见的
+Python 程序主要面向 Obsidian vault 和其他 UTF-8 文本文件；`.txt`、`.md` 和
+`.markdown` 都按同一套 Markdown 图片规则处理。它理解常见的
 Markdown 图片语法，不会把文件中的每一个 URL 都当作图片。
 
 ### Python 上传平台
@@ -46,12 +47,12 @@ GUI 提供固定的 PicGo.net 选项。Python CLI 选择 `chevereto` 时，会�
 
 ### Python 程序功能
 
-- 通过原生 GUI 选择单个 Markdown 文件或整个文件夹。
+- 通过原生 GUI 选择单个 `.txt`、`.md`、`.markdown` 文件或整个文件夹。
 - 正式迁移前先安全扫描，不修改文件。
 - 可以迁移所有外链图片，也可以限定指定来源域名。
-- 识别 Markdown 行内图片、HTML `<img>` 标签和 Markdown 引用式图片。
+- 只识别 Markdown 图片 `![说明](URL)`（包括空说明 `![](URL)`）、Markdown 引用式图片和 HTML `<img src="URL">`。
 - 自动跳过 YAML 属性区、代码块、行内代码、隐藏文件夹和所选目标平台的现有链接。
-- 先下载并验证源图片，同时执行本地 32 MB 安全限制。
+- 下载所选链接，并执行本地 32 MB 大小限制；下载后不按文件内容特征验证图片类型。
 - 显示每张图片的进度、缓存复用、成功和失败详情。
 - 两个平台都限制为每分钟最多发送 50 次上传请求。
 - 支持自动重试，也可以在 GUI 中手动重试失败项目。
@@ -86,13 +87,13 @@ python3 img_link_migrator.py --gui
 
 操作步骤：
 
-1. 选择一个 Markdown 文件或 vault 文件夹。
+1. 选择一个 `.txt`、`.md`、`.markdown` 文件或 vault 文件夹。
 2. 保留默认的 **PicGo.net (Chevereto)**，或者改选 **ImgBB**。
 3. 粘贴该平台的 API key。它只会保存在本次运行的内存中。
 4. 根据需要填写一个或多个来源域名，多个域名使用英文逗号分隔。
 5. 选择是否在修改文件前创建备份。
 6. 点击 `Scan`，预览检测到的图片链接。
-7. 点击 `Start migration`，上传图片并替换成功项目的链接。
+7. 扫描结果会显示图片来源域名；点击 `Start migration` 后再次确认，程序才会上传并替换成功项目的链接。
 8. 如果存在失败项目，点击 `Retry failed`。
 
 来源域名留空时会处理所有外链图片。所选目标平台自己的域名会被排除，避免重复上传。
@@ -219,7 +220,7 @@ python3 img_link_migrator.py \
 
 #### 目标路径是什么
 
-“目标”是要扫描的 Markdown 文件或文件夹路径：
+“目标”是要扫描的 `.txt`、`.md`、`.markdown` 文件或文件夹路径：
 
 - `./note.md`：当前目录中的 `note.md` 文件。
 - `./notes`：当前目录中的 `notes` 文件夹。它只是示例；如果没有这个文件夹，就要
@@ -319,9 +320,10 @@ CLI 有三种基本写法：
 
 | 参数 | 你需要填写什么 | 不写这个参数时 | 作用与示例 |
 |---|---|---|---|
-| `目标路径` | 一个或多个 Markdown 文件或文件夹路径，不要输入单词 `targets`。 | 扫描和迁移模式必须有目标；单独运行程序会打开 GUI。 | `"$HOME/Documents/MyVault"`；多个目标写成 `"folder-a" "note-b.md"`。 |
+| `目标路径` | 一个或多个 `.txt`、`.md`、`.markdown` 文件或文件夹路径，不要输入单词 `targets`。 | 扫描和迁移模式必须有目标；单独运行程序会打开 GUI。 | `"$HOME/Documents/MyVault"`；多个目标写成 `"folder-a" "note-b.md"`。 |
 | `--gui` | 后面不填值。 | 使用 CLI；有目标时默认只扫描。 | `python3 img_link_migrator.py --gui` |
 | `--apply` | 后面不填值。 | 只扫描，不下载、不上传、不修改文件。 | `python3 img_link_migrator.py --apply "$HOME/Documents/MyVault"` |
+| `--yes` | 后面不填值。 | `--apply` 会在扫描并显示域名后等待确认。 | 无交互地确认迁移：`python3 img_link_migrator.py --apply --yes "$HOME/Documents/MyVault"`。 |
 | `--provider NAME` | `NAME` 填 `imgbb` 或 `chevereto`。 | `chevereto`，使用 PicGo.net | `--provider imgbb` 选择 ImgBB。 |
 | `--chevereto-url URL` | Chevereto 站点基础 URL。 | `https://www.picgo.net` | 其他站点示例：`--provider chevereto --chevereto-url "https://images.example.com"`。 |
 | `--api-key KEY` | 把 `KEY` 换成所选平台的 API key。 | 自动读取 `IMGBB_API_KEY` 或 `CHEVERETO_API_KEY`；缺少时无法迁移。 | `--api-key "YOUR_KEY"`；使用对应环境变量更安全。 |
@@ -364,21 +366,25 @@ URL/图片内容缓存以及可选备份都保存在所选 vault 之外：
 
 ```markdown
 ![说明文字](https://example.com/image.png)
+![](https://example.com/image-without-alt.png)
 
 <img src="https://example.com/image.jpg" alt="示例">
+<img src=https://example.com/unquoted-image.jpg alt="示例">
 
 ![说明文字][image-id]
 [image-id]: https://example.com/image.webp
 ```
 
-普通链接（例如 `[网站](https://example.com/)`）不会被当作图片处理。
+普通链接（例如 `[网站](https://example.com/)`）和 Obsidian 本地附件嵌入
+（例如 `![[image.png]]`）不会被当作外链图片处理。Obsidian 的外链图片使用
+`![](URL)` 这样的 Markdown 图片语法。
 
 ### Python 安全处理流程
 
 完整迁移过程如下：
 
 1. 扫描 Markdown，记录可以替换的图片 URL。
-2. 下载并验证第一张源图片。
+2. 下载第一条唯一来源 URL，并限制在 32 MB 以内；不检查下载内容是否符合图片特征。
 3. 如果本地存在所选平台仍然有效的缓存链接，则直接复用；否则上传图片。
 4. 图片上传完成后，立即处理所有引用该 URL 的 Markdown 文件：
    - 如果启用了备份，并且该文件在本次任务中尚未备份，先备份一次原文件。
@@ -428,7 +434,8 @@ python3 -m py_compile img_link_migrator.py
 
 ### Python 程序限制
 
-- Python GUI/CLI 只修改 UTF-8 编码的 `.md` 和 `.markdown` 文件。
+- Python GUI/CLI 使用相同的 Markdown 图片规则处理 UTF-8 编码的 `.txt`、`.md` 和
+  `.markdown` 文件。
 - 需要浏览器登录状态才能访问的源图片可能无法下载。对于小红书 CDN，程序会自动把
   小红书网站设置为 HTTP Referer，这可以处理许多公开图片链接。
 - URL 解析主要支持 Obsidian 和 Markdown 的常见图片语法。自定义插件生成的非标准
@@ -443,10 +450,10 @@ python3 -m py_compile img_link_migrator.py
 
 ### 单文件工具的处理范围
 
-- 接受一个 `.txt`、`.md` 或 `.markdown` 文件，或者一个文件夹。
+- 接受一个 `.txt`、`.md` 或 `.markdown` 文件，或者一个文件夹；三种扩展名使用相同扫描规则。
 - 递归搜索文件夹，同时跳过隐藏文件和隐藏目录。
 - 直接扫描文件字节，不检测或转换文本编码。
-- 查找支持文件中任何位置出现的 `http://` 和 `https://` URL。
+- 只扫描 Markdown 图片语法 `![说明](URL)`（包括 `![](URL)`）、已使用的引用式图片和 HTML `<img src="URL">`。
 - 按来源域名筛选 URL；默认域名是 `xhscdn.com` 及其全部子域名。
 - 初次扫描时建立 URL 到文件的索引；上传完成后只检查原本包含该 URL 的文件。
 - 同时缓存来源 URL 和下载图片的 SHA-256；已知的相同图片会直接复用目标 URL，
@@ -454,7 +461,7 @@ python3 -m py_compile img_link_migrator.py
 - 可以上传到 ImgBB，或者使用 Chevereto API v1 上传到 PicGo.net。
 - PicGo.net 的 `Duplicated upload` 响应只要包含有效图片 URL，就按成功复用处理。
 - 排除属于当前所选目标平台的现有链接。
-- 下载每个选中的 URL，并排除非图片内容以及超过 32 MB 的图片。
+- 下载每个选中的 URL；拒绝空响应或超过 32 MB 的内容，不根据下载内容特征验证图片类型。
 - 每次下载和上传最多尝试四次，等待时间自动逐步延长。
 - 两个平台的上传请求（包括重试）都限制为每分钟不超过 50 次；遇到限速响应时，
   全部上传统一暂停 60 秒。
@@ -464,15 +471,15 @@ python3 -m py_compile img_link_migrator.py
 - 任一任务上传成功后，由主进程串行处理文件，并通过原子写入立即替换索引中的全部
   相同 URL。
 
-单文件扫描器不理解 Markdown 语法结构。在 Markdown 文件中，图片语法、普通文字、
-YAML 属性区或代码块内符合来源域名的 URL 都可能被找到；下载后的图片验证会阻止
-非图片内容上传。需要 Markdown 语法识别规则时，应使用 Python 程序。
+所有支持的文件都使用相同规则：单文件工具只扫描 Markdown 图片 `![说明](URL)`
+（包括 `![](URL)`）、已使用的引用式图片和 HTML `<img src="URL">`，并跳过属性区、
+代码块和行内代码。下载后不再根据文件内容判断链接是否为图片。
 
 ### 单文件工具要求
 
 - macOS
 - ImgBB 或 PicGo.net API key
-- macOS 系统自带的 `zsh`、`curl`、`plutil`、`file`、`Perl` 及相关命令行工具
+- macOS 系统自带的 `zsh`、`curl`、`plutil`、`Perl` 及相关命令行工具
 
 ### 运行单文件工具
 
@@ -487,7 +494,8 @@ YAML 属性区或代码块内符合来源域名的 URL 都可能被找到；下�
 1. 保留默认的 PicGo.net，或者改选 ImgBB。
 2. 输入所选平台的 API key。本次运行中的输入内容会被隐藏。
 3. 把一个支持的文件或文件夹拖入终端，然后按回车。
-4. 选择来源域名。扫描结束后会立即开始迁移。
+4. 选择来源域名。
+5. 查看扫描出的图片 URL 和来源域名；输入 `y` 后才开始迁移。
 
 上传平台提示如下：
 
@@ -512,7 +520,7 @@ Your choice [1]:
 Choose where the original image links come from:
   Press Return to use xhscdn.com and its subdomains.
   Or type domains separated by commas: xhscdn.com,example.com
-  Or type * to check every domain; non-image URLs are skipped.
+  Or type * to check every domain; scanning still requires image syntax.
 Your choice [xhscdn.com]:
 ```
 
@@ -521,15 +529,15 @@ Your choice [xhscdn.com]:
 | 不输入内容，直接按回车 | `xhscdn.com` 及其全部子域名中的 URL。 |
 | `example.com` | `example.com` 及其全部子域名中的 URL。 |
 | `xhscdn.com,example.com` | 两个所列域名及其子域名中的 URL。 |
-| `*` | 所有域名中的 URL；只有成功下载并验证为图片的内容才会上传。 |
+| `*` | 所有域名中符合图片语法的 URL。 |
 
 程序不再询问 worker 数量。内部会自动重叠最多 3 个下载任务，但所有 worker 共用
 同一个上传时间表。PicGo.net 和 ImgBB 的上传请求开始时间至少间隔 1.21 秒，使速度
 保持在每分钟 50 次以下；重试也使用同一时间表。如果收到限速响应，全部上传 worker
 会暂停 60 秒，随后自动继续重试。
 
-程序不会再询问是否备份，也不会再询问是否开始。显示扫描数量后，只要存在匹配 URL，
-就会立即开始处理。
+单文件工具不建立备份。扫描结束后会列出图片来源域名和候选 URL，并等待你确认；输入
+`y` 或 `yes` 才会开始处理。失败时会在结束摘要下列出所有失败 URL。
 
 迁移期间，`Downloading`、`Uploading`、`Uploaded` 和失败信息都会显示该任务的
 `[当前编号/总数]`。由于可以同时处理多个任务，完成顺序可能与编号顺序不同。
@@ -558,12 +566,12 @@ Your choice [xhscdn.com]:
 
 ### 单文件工具示例
 
-以下内容可以位于文本文件或 Markdown 文件中：
+以下 Markdown 图片语法可以位于 `.txt`、`.md` 或 `.markdown` 文件中：
 
 ```text
 图片
 ------------------------
-1. https://sns-webpic-qc.xhscdn.com/path/to/image
+1. ![](https://sns-webpic-qc.xhscdn.com/path/to/image)
 ```
 
 上传成功后，只会改变 URL：
@@ -571,7 +579,7 @@ Your choice [xhscdn.com]:
 ```text
 图片
 ------------------------
-1. https://i.ibb.co/example/image.webp
+1. ![](https://i.ibb.co/example/image.webp)
 ```
 
 ### 单文件工具开发检查

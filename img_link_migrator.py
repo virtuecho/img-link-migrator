@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Migrate external images in Markdown files to supported image hosts.
+"""Migrate external images in Markdown-syntax text files to image hosts.
 
 The module provides both a CLI and a small Tk GUI.  It deliberately stores no
 API key on disk; use the provider environment variable or paste the key into
@@ -245,7 +245,10 @@ _MARKDOWN_IMAGE_RE = re.compile(
     re.IGNORECASE,
 )
 _HTML_IMAGE_RE = re.compile(
-    r"<img\b[^>]*?\bsrc\s*=\s*(?P<quote>[\"'])(?P<url>https?://.*?)(?P=quote)",
+    r"<img\b[^>]*?\s+src\s*=\s*(?:"
+    r'"(?P<double>https?://[^\"]+)"|'
+    r"'(?P<single>https?://[^']+)'|"
+    r"(?P<plain>https?://[^\s>]+))",
     re.IGNORECASE,
 )
 _REFERENCE_USE_RE = re.compile(r"!\[[^\]\r\n]*\]\[(?P<id>[^\]\r\n]*)\]")
@@ -318,7 +321,12 @@ def extract_image_references(
             add(original[start:end], offset + start, offset + end, "markdown")
 
         for match in _HTML_IMAGE_RE.finditer(masked):
-            start, end = match.span("url")
+            group = next(
+                name
+                for name in ("double", "single", "plain")
+                if match.group(name) is not None
+            )
+            start, end = match.span(group)
             add(original[start:end], offset + start, offset + end, "html")
 
         definition = _REFERENCE_DEF_RE.match(masked)
@@ -335,20 +343,20 @@ def discover_markdown_files(targets: Sequence[pathlib.Path]) -> List[pathlib.Pat
     files: Set[pathlib.Path] = set()
     for raw_target in targets:
         target = raw_target.expanduser().resolve()
-        if target.is_file() and target.suffix.lower() in {".md", ".markdown"}:
+        if target.is_file() and target.suffix.lower() in {".md", ".markdown", ".txt"}:
             files.add(target)
             continue
         if target.is_dir():
             for path in target.rglob("*"):
                 if (
                     path.is_file()
-                    and path.suffix.lower() in {".md", ".markdown"}
+                    and path.suffix.lower() in {".md", ".markdown", ".txt"}
                     and not any(part.startswith(".") for part in path.relative_to(target).parts)
                 ):
                     files.add(path.resolve())
             continue
         raise MigrationError(
-            "Target does not exist or is not a Markdown file/directory: {}".format(
+            "Target does not exist or is not a supported text file/directory: {}".format(
                 target
             )
         )
@@ -499,34 +507,15 @@ class StateStore:
                 pass
 
 
-def _image_type(data: bytes, content_type: str, url: str) -> Tuple[str, str]:
+def _media_type(content_type: str, url: str) -> Tuple[str, str]:
+    """Choose upload metadata without validating the downloaded content."""
+
     content_type = content_type.split(";", 1)[0].strip().lower()
-    signatures = (
-        (b"\xff\xd8\xff", "image/jpeg", ".jpg"),
-        (b"\x89PNG\r\n\x1a\n", "image/png", ".png"),
-        (b"GIF87a", "image/gif", ".gif"),
-        (b"GIF89a", "image/gif", ".gif"),
-        (b"BM", "image/bmp", ".bmp"),
-        (b"II*\x00", "image/tiff", ".tif"),
-        (b"MM\x00*", "image/tiff", ".tif"),
-    )
-    for signature, detected_type, extension in signatures:
-        if data.startswith(signature):
-            return detected_type, extension
-    if len(data) >= 12 and data[:4] == b"RIFF" and data[8:12] == b"WEBP":
-        return "image/webp", ".webp"
-    if b"<svg" in data[:1024].lower():
-        return "image/svg+xml", ".svg"
-    if content_type.startswith("image/"):
-        guessed = mimetypes.guess_extension(content_type) or pathlib.Path(
-            urllib.parse.urlsplit(url).path
-        ).suffix
-        return content_type, guessed or ".img"
-    raise MigrationError(
-        "Downloaded content is not a recognized image (Content-Type: {}).".format(
-            content_type or "unknown"
-        )
-    )
+    path = urllib.parse.urlsplit(url).path
+    if not content_type.startswith("image/"):
+        content_type = mimetypes.guess_type(path)[0] or "application/octet-stream"
+    extension = mimetypes.guess_extension(content_type) or pathlib.Path(path).suffix
+    return content_type, extension or ".img"
 
 
 def _safe_filename(url: str, extension: str) -> str:
@@ -686,8 +675,8 @@ class BaseUploadClient:
                     data = b"".join(chunks)
                     if not data:
                         raise MigrationError("Downloaded image is empty.")
-                    content_type, extension = _image_type(
-                        data, response.headers.get("Content-Type", ""), url
+                    content_type, extension = _media_type(
+                        response.headers.get("Content-Type", ""), url
                     )
                     return data, content_type, _safe_filename(url, extension)
             except urllib.error.HTTPError as exc:
@@ -1059,13 +1048,17 @@ class MigrationEngine:
         targets: Sequence[pathlib.Path],
         apply: bool,
         only_urls: Optional[Set[str]] = None,
+        plans: Optional[Sequence[FilePlan]] = None,
     ) -> MigrationReport:
-        plans = scan_targets(
-            targets,
-            include_hosts=self.include_hosts,
-            exclude_hosts=self.exclude_hosts,
-            callback=self.callback,
-        )
+        if plans is None:
+            plans = scan_targets(
+                targets,
+                include_hosts=self.include_hosts,
+                exclude_hosts=self.exclude_hosts,
+                callback=self.callback,
+            )
+        else:
+            plans = list(plans)
         if only_urls is not None:
             filtered: List[FilePlan] = []
             for plan in plans:
@@ -1310,13 +1303,7 @@ def _create_upload_client(
 
 def _cli_callback(event: Dict[str, object]) -> None:
     kind = event.get("kind")
-    if kind == "discovered":
-        items = event.get("items", [])
-        if isinstance(items, list):
-            for item in items:
-                if isinstance(item, dict):
-                    print("{}\t{}".format(item.get("path", ""), item.get("url", "")))
-    elif kind == "retry":
+    if kind == "retry":
         print(
             "  Automatic retry: {stage} attempt {next_attempt} starts in "
             "{delay}s ({message})".format(
@@ -1346,7 +1333,7 @@ def _cli_callback(event: Dict[str, object]) -> None:
 def _run_cli(args: argparse.Namespace) -> int:
     targets = [pathlib.Path(item) for item in args.targets]
     if not targets:
-        raise MigrationError("Specify at least one Markdown file or directory.")
+        raise MigrationError("Specify at least one .txt, .md, .markdown file, or directory.")
     include_hosts = _parse_hosts(args.include_host)
     exclude_hosts = _provider_excluded_hosts(
         args.provider, args.chevereto_url
@@ -1356,9 +1343,46 @@ def _run_cli(args: argparse.Namespace) -> int:
     )
     state_root = pathlib.Path(args.state_dir) if args.state_dir else None
     store = StateStore(state_root)
+    plans = scan_targets(
+        targets,
+        include_hosts=include_hosts,
+        exclude_hosts=exclude_hosts,
+        callback=_cli_callback,
+    )
+    refs = [reference for plan in plans for reference in plan.references]
+    urls = list(dict.fromkeys(reference.url for reference in refs))
+    domains: Dict[str, int] = {}
+    for url in urls:
+        host = urllib.parse.urlsplit(url).hostname or "unknown"
+        domains[host.lower()] = domains.get(host.lower(), 0) + 1
+
+    print(
+        "Scanned {} file(s), found {} image reference(s) / {} unique URL(s).".format(
+            len(plans), len(refs), len(urls)
+        )
+    )
+    print("Image source domains:")
+    for host in sorted(domains):
+        print("  {} ({} unique URL(s))".format(host, domains[host]))
+    for reference in refs:
+        print("{}\t{}".format(reference.path, reference.url))
+
+    if args.apply and urls and not args.yes:
+        if not sys.stdin.isatty():
+            raise MigrationError(
+                "Migration needs confirmation. Run interactively or pass --yes."
+            )
+        try:
+            answer = input("Start migration for these image URLs? [y/N]: ")
+        except EOFError:
+            answer = ""
+        if answer.strip().lower() not in {"y", "yes"}:
+            print("Migration cancelled; no links were changed.")
+            return 0
+
     cancel_event = threading.Event()
     client = None
-    if args.apply:
+    if args.apply and urls:
         env_name = _provider_environment_variable(args.provider)
         client = _create_upload_client(
             args.provider,
@@ -1381,7 +1405,7 @@ def _run_cli(args: argparse.Namespace) -> int:
         cache_namespace=cache_namespace,
     )
     try:
-        report = engine.run(targets, apply=args.apply)
+        report = engine.run(targets, apply=args.apply, plans=plans)
     except KeyboardInterrupt:
         cancel_event.set()
         print("\nTask cancelled.", file=sys.stderr)
@@ -1401,6 +1425,10 @@ def _run_cli(args: argparse.Namespace) -> int:
         failed=len(report.failed_urls),
     )
     print(summary)
+    if report.failed_urls:
+        print("Failed URLs:")
+        for url, detail in report.failed_urls.items():
+            print("  {}\n    {}".format(url, detail))
     if report.backup_dir:
         print("Backup: {}".format(report.backup_dir))
     if args.report:
@@ -1447,13 +1475,17 @@ class MigratorGUI:
         self.retries_var = tk.StringVar(value="3")
         self.backup_var = tk.BooleanVar(value=True)
         self.summary_var = tk.StringVar(
-            value="Choose a Markdown file or vault directory."
+            value="Choose a .txt, .md, .markdown file, or vault directory."
         )
         self.progress_var = tk.DoubleVar(value=0)
         self.event_queue: "queue.Queue[Tuple[str, object]]" = queue.Queue()
         self.cancel_event = threading.Event()
         self.worker: Optional[threading.Thread] = None
         self.last_failed: Set[str] = set()
+        self.last_domains: Tuple[str, ...] = ()
+        self.last_scan_urls: Set[str] = set()
+        self.last_scan_target: Optional[pathlib.Path] = None
+        self.has_scan = False
         self.rows: Dict[str, str] = {}
 
         self._build()
@@ -1591,8 +1623,8 @@ class MigratorGUI:
 
     def _choose_file(self) -> None:
         selected = self.filedialog.askopenfilename(
-            title="Choose a Markdown file",
-            filetypes=[("Markdown", "*.md *.markdown"), ("All files", "*")],
+            title="Choose a Markdown text file",
+            filetypes=[("Markdown text", "*.txt *.md *.markdown"), ("All files", "*")],
         )
         if selected:
             self.target_var.set(selected)
@@ -1609,7 +1641,7 @@ class MigratorGUI:
     ) -> Tuple[pathlib.Path, str, str, int, int, Tuple[str, ...], bool]:
         target = pathlib.Path(self.target_var.get().strip()).expanduser()
         if not self.target_var.get().strip() or not target.exists():
-            raise MigrationError("Choose a valid Markdown file or directory.")
+            raise MigrationError("Choose a supported text file or directory.")
         try:
             expiration = int(self.expiration_var.get())
             retries = int(self.retries_var.get())
@@ -1636,20 +1668,43 @@ class MigratorGUI:
         )
 
     def _scan(self) -> None:
+        self.has_scan = False
+        self.last_domains = ()
+        self.last_scan_urls = set()
+        self.last_scan_target = pathlib.Path(
+            self.target_var.get().strip()
+        ).expanduser().resolve()
         self._start(False, None)
 
     def _migrate(self) -> None:
+        if not self.has_scan:
+            self.messagebox.showinfo(
+                "Scan first", "Scan the selected files to review image links and domains."
+            )
+            return
+        target = pathlib.Path(self.target_var.get().strip()).expanduser().resolve()
+        if target != self.last_scan_target:
+            self.messagebox.showinfo(
+                "Scan again", "The selected target changed. Scan it before migration."
+            )
+            return
+        if not self.last_domains:
+            self.messagebox.showinfo(APP_NAME, "The last scan found no image links.")
+            return
+        domains = "\n".join("  " + host for host in self.last_domains)
         if not self.messagebox.askyesno(
             "Confirm migration",
-            "Successful uploads will modify the selected Markdown files. "
+            "Detected image source domains:\n{}\n\n"
+            "Successful uploads will modify the selected text files. "
             "{} Continue?".format(
+                domains,
                 "Original files will be backed up first."
                 if self.backup_var.get()
                 else "Backups are disabled for this run."
             ),
         ):
             return
-        self._start(True, None)
+        self._start(True, set(self.last_scan_urls))
 
     def _retry_failed(self) -> None:
         if self.last_failed:
@@ -1740,13 +1795,24 @@ class MigratorGUI:
         kind = event.get("kind")
         if kind == "discovered":
             items = event.get("items", [])
+            domains: Set[str] = set()
+            urls: Set[str] = set()
             if isinstance(items, list):
                 for item in items:
                     if isinstance(item, dict):
-                        self._row_for(str(item.get("url", "")), str(item.get("path", "")))
+                        url = str(item.get("url", ""))
+                        urls.add(url)
+                        self._row_for(url, str(item.get("path", "")))
+                        host = urllib.parse.urlsplit(url).hostname
+                        if host:
+                            domains.add(host.lower())
+            self.last_domains = tuple(sorted(domains))
+            self.last_scan_urls = urls
+            self.has_scan = True
+            domain_text = ", ".join(self.last_domains) or "none"
             self.summary_var.set(
-                "Found {} unique URL(s) across {} image reference(s).".format(
-                    event.get("urls", 0), event.get("references", 0)
+                "Found {} unique image URL(s) across {} reference(s). Domains: {}".format(
+                    event.get("urls", 0), event.get("references", 0), domain_text
                 )
             )
         elif kind == "url_start":
@@ -1815,6 +1881,14 @@ class MigratorGUI:
                             + " Backup: "
                             + report.backup_dir
                         )
+                    if report.failed_urls:
+                        failures = "\n".join(
+                            "{}: {}".format(url, detail)
+                            for url, detail in report.failed_urls.items()
+                        )
+                        self.messagebox.showwarning(
+                            APP_NAME, "All failed image URLs:\n\n" + failures
+                        )
                 elif kind == "error":
                     self._set_busy(False)
                     self.messagebox.showerror(APP_NAME, str(payload))
@@ -1847,13 +1921,20 @@ def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description="Migrate external Markdown images to a supported image host."
     )
-    parser.add_argument("targets", nargs="*", help="Markdown file(s) or directories")
+    parser.add_argument(
+        "targets", nargs="*", help=".txt, .md, or .markdown files/directories"
+    )
     mode = parser.add_mutually_exclusive_group()
     mode.add_argument("--gui", action="store_true", help="Open the desktop GUI")
     mode.add_argument(
         "--apply",
         action="store_true",
         help="Upload and replace links; without this flag, only scan",
+    )
+    parser.add_argument(
+        "--yes",
+        action="store_true",
+        help="Confirm migration without prompting (for non-interactive use)",
     )
     parser.add_argument(
         "--provider",

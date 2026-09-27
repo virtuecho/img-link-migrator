@@ -158,6 +158,62 @@ collect_target_files() {
   )
 }
 
+markdown_image_urls() {
+  LC_ALL=C /usr/bin/perl -0777 -ne '
+    my $offset = 0;
+    my $frontmatter = /\A---\r?\n/;
+    my $in_fence = 0;
+    my $fence_marker = "";
+    my @lines;
+    for my $line (split /(?<=\n)/, $_) {
+      if ($frontmatter) {
+        $frontmatter = 0 if $offset > 0 && $line =~ /^\s*(?:---|\.\.\.)\s*(?:\r?\n)?\z/;
+        $offset += length($line);
+        next;
+      }
+      if ($line =~ /^\s*(`{3,}|~{3,})/) {
+        my $marker = substr($1, 0, 1);
+        if (!$in_fence) {
+          $in_fence = 1;
+          $fence_marker = $marker;
+        } elsif ($marker eq $fence_marker) {
+          $in_fence = 0;
+          $fence_marker = "";
+        }
+        $offset += length($line);
+        next;
+      }
+      if (!$in_fence) {
+        $line =~ s/(`+)(.*?)\1/" " x length($&)/ge;
+        push @lines, $line;
+      }
+      $offset += length($line);
+    }
+
+    my %reference_ids;
+    for my $line (@lines) {
+      while ($line =~ /!\[[^\]\r\n]*\]\[([^\]\r\n]*)\]/g) {
+        my $id = lc $1;
+        $id =~ s/^\s+|\s+$//g;
+        $reference_ids{$id} = 1 if length $id;
+      }
+    }
+    for my $line (@lines) {
+      while ($line =~ /!\[[^\]\r\n]*\]\(\s*(?:<\s*(https?:\/\/[^>\r\n]+?)\s*>|(https?:\/\/[^\s)\r\n]+))/ig) {
+        print((defined $1 ? $1 : $2), "\n");
+      }
+      while ($line =~ /<img\b[^>]*?\s+src\s*=\s*(?:"(https?:\/\/[^\"]+)"|\x27(https?:\/\/[^\x27]+)\x27|(https?:\/\/[^\s>]+))/ig) {
+        print((defined $1 ? $1 : defined $2 ? $2 : $3), "\n");
+      }
+      if ($line =~ /^\s*\[([^\]\r\n]+)\]:\s*(?:<\s*(https?:\/\/[^>\s]+)\s*>|(https?:\/\/[^\s]+))/i) {
+        my $id = lc $1;
+        $id =~ s/^\s+|\s+$//g;
+        print((defined $2 ? $2 : $3), "\n") if $reference_ids{$id};
+      }
+    }
+  ' "$1"
+}
+
 collect_urls() {
   local file
   local url
@@ -185,7 +241,7 @@ collect_urls() {
         fi
       fi
     done < <(
-      LC_ALL=C /usr/bin/grep -aEo "https?://[^[:space:]<>\"']+" "$file" || true
+      markdown_image_urls "$file"
     )
   done
 }
@@ -467,25 +523,31 @@ download_image() {
       --user-agent "$USER_AGENT"
       --header 'Accept: image/*,*/*;q=0.8'
       --output "$output_file"
+      --write-out '%{content_type}'
     )
     if [[ "$host" == "xhscdn.com" || "$host" == *."xhscdn.com" ]]; then
       curl_args+=(--referer 'https://www.xiaohongshu.com/')
     fi
 
     : > "$output_file"
-    if /usr/bin/curl "${curl_args[@]}" -- "$url"; then
+    if mime="$(/usr/bin/curl "${curl_args[@]}" -- "$url")"; then
       size="$(/usr/bin/stat -f '%z' "$output_file" 2>/dev/null || print 0)"
-      mime="$(/usr/bin/file -b --mime-type "$output_file" 2>/dev/null)"
-      if (( size > 0 && size <= MAX_IMAGE_BYTES )) && [[ "$mime" == image/* ]]; then
-        downloaded_mime="$mime"
-        extension="${mime#image/}"
-        extension="${extension%%+*}"
-        [[ "$extension" == "jpeg" ]] && extension="jpg"
-        [[ "$extension" =~ '^[A-Za-z0-9]+$' ]] || extension="img"
-        downloaded_filename="image.${extension}"
+      mime="${mime%%;*}"
+      if (( size > 0 && size <= MAX_IMAGE_BYTES )); then
+        if [[ "$mime" == image/* ]]; then
+          downloaded_mime="$mime"
+          extension="${mime#image/}"
+          extension="${extension%%+*}"
+          [[ "$extension" == "jpeg" ]] && extension="jpg"
+          [[ "$extension" =~ '^[A-Za-z0-9]+$' ]] || extension="img"
+          downloaded_filename="image.${extension}"
+        else
+          downloaded_mime="application/octet-stream"
+          downloaded_filename="image.bin"
+        fi
         return 0
       fi
-      log_transfer_error "Downloaded content is not a valid image or exceeds 32 MB."
+      log_transfer_error "Downloaded content is empty or exceeds 32 MB."
     else
       log_transfer_error "Download attempt ${attempt} failed."
     fi
@@ -715,9 +777,73 @@ replace_url_in_file() {
   fi
 
   temp_file="$(/usr/bin/mktemp "${file}.img-link-migrator.XXXXXX")" || return 1
-  if ! LC_ALL=C OLD_URL="$original_url" NEW_URL="$migrated_url" \
-    /usr/bin/perl -0777 -pe \
-      's/\Q$ENV{OLD_URL}\E/$ENV{NEW_URL}/g' -- "$file" > "$temp_file"; then
+  LC_ALL=C OLD_URL="$original_url" NEW_URL="$migrated_url" \
+    /usr/bin/perl -0777 -ne '
+        my @lines = split /(?<=\n)/, $_;
+        my @masked;
+        my @allowed;
+        my $offset = 0;
+        my $frontmatter = /\A---\r?\n/;
+        my $in_fence = 0;
+        my $fence_marker = "";
+        for my $index (0 .. $#lines) {
+          my $line = $lines[$index];
+          $masked[$index] = $line;
+          $allowed[$index] = 0;
+          if ($frontmatter) {
+            $frontmatter = 0 if $offset > 0 && $line =~ /^\s*(?:---|\.\.\.)\s*(?:\r?\n)?\z/;
+            $offset += length($line);
+            next;
+          }
+          if ($line =~ /^\s*(`{3,}|~{3,})/) {
+            my $marker = substr($1, 0, 1);
+            if (!$in_fence) {
+              $in_fence = 1;
+              $fence_marker = $marker;
+            } elsif ($marker eq $fence_marker) {
+              $in_fence = 0;
+              $fence_marker = "";
+            }
+            $offset += length($line);
+            next;
+          }
+          if (!$in_fence) {
+            $masked[$index] =~ s/(`+)(.*?)\1/" " x length($&)/ge;
+            $allowed[$index] = 1;
+          }
+          $offset += length($line);
+        }
+        my %reference_ids;
+        for my $index (0 .. $#lines) {
+          next unless $allowed[$index];
+          while ($masked[$index] =~ /!\[[^\]\r\n]*\]\[([^\]\r\n]*)\]/g) {
+            my $id = lc $1;
+            $id =~ s/^\s+|\s+$//g;
+            $reference_ids{$id} = 1 if length $id;
+          }
+        }
+        my $old = quotemeta($ENV{OLD_URL});
+        for my $index (0 .. $#lines) {
+          next unless $allowed[$index];
+          my @spans;
+          while ($masked[$index] =~ /!\[[^\]\r\n]*\]\(\s*(?:<\s*)?($old)(?=[>\s)])/ig) {
+            push @spans, [$-[1], $+[1]];
+          }
+          while ($masked[$index] =~ /<img\b[^>]*?\s+src\s*=\s*(?:"|\x27)?($old)(?=(?:"|\x27|\s|>))/ig) {
+            push @spans, [$-[1], $+[1]];
+          }
+          if ($masked[$index] =~ /^\s*\[([^\]\r\n]+)\]:\s*(?:<\s*)?($old)(?=[>\s])/i) {
+            my $id = lc $1;
+            $id =~ s/^\s+|\s+$//g;
+            push @spans, [$-[2], $+[2]] if $reference_ids{$id};
+          }
+          for my $span (sort { $b->[0] <=> $a->[0] } @spans) {
+            substr($lines[$index], $span->[0], $span->[1] - $span->[0], $ENV{NEW_URL});
+          }
+        }
+        print @lines;
+    ' -- "$file" > "$temp_file"
+  if (( $? != 0 )); then
     /bin/rm -f -- "$temp_file"
     return 1
   fi
@@ -761,7 +887,7 @@ prompt_settings() {
   local host
 
   print -r -- "${APP_NAME} ${APP_VERSION}"
-  print -r -- "Migrates image URLs in .txt, .md, and .markdown files."
+  print -r -- "Scans Markdown image syntax in .txt, .md, and .markdown files."
   print
 
   print -r -- "Choose the upload service:"
@@ -808,7 +934,7 @@ prompt_settings() {
   print -r -- "Choose where the original image links come from:"
   print -r -- "  Press Return to use xhscdn.com and its subdomains."
   print -r -- "  Or type domains separated by commas: xhscdn.com,example.com"
-  print -r -- "  Or type * to check every domain; non-image URLs are skipped."
+  print -r -- "  Or type * to check every domain; Markdown still needs image syntax."
   read -r "source_input?Your choice [xhscdn.com]: "
   source_input="${source_input:l}"
   source_input="${source_input//[[:space:]]/}"
@@ -832,9 +958,20 @@ prompt_settings() {
 
 show_scan_summary() {
   local source_description
+  local url
+  local host
+  local start_input
+  local -A domain_counts
 
   source_description="${(j:, :)source_hosts}"
   [[ "$all_hosts" == true ]] && source_description="every domain"
+  domain_counts=()
+  for url in "${urls[@]}"; do
+    if [[ "$url" =~ '^https?://([^/:?#]+)' ]]; then
+      host="${match[1]:l}"
+      (( domain_counts[$host] += 1 ))
+    fi
+  done
 
   print
   print -r -- "Target: ${target_path:A}"
@@ -844,6 +981,20 @@ show_scan_summary() {
   print -r -- "Upload service: $provider_name"
   print -r -- "Upload request limit: ${UPLOADS_PER_MINUTE} per minute"
   print -r -- "Selected domains: $source_description"
+  print -r -- "Image source domains:"
+  if (( ${#domain_counts} == 0 )); then
+    print -r -- "  (none)"
+  else
+    for host in ${(ok)domain_counts}; do
+      print -r -- "  ${host} (${domain_counts[$host]} unique URL(s))"
+    done
+  fi
+  if (( ${#urls} > 0 )); then
+    print -r -- "Image URL candidates:"
+    for url in "${urls[@]}"; do
+      print -r -- "  ${url}"
+    done
+  fi
   print
 
   if (( ${#urls} == 0 )); then
@@ -851,6 +1002,12 @@ show_scan_summary() {
     return 1
   fi
 
+  read -r "start_input?Start migration and upload these images? [y/N]: "
+  start_input="${start_input:l}"
+  if [[ "$start_input" != "y" && "$start_input" != "yes" ]]; then
+    print -r -- "Migration cancelled; no links were changed."
+    return 1
+  fi
   print -r -- "Starting migration..."
 }
 
@@ -869,10 +1026,12 @@ run_migration() {
   local job_id
   local job_pid
   local completed_any
+  local -a failed_urls
   local -a active_job_ids
   local -A job_pids
   local -A job_urls
   local -A job_results
+  failed_urls=()
 
   /bin/mkdir -p -- "$state_dir" || return 1
   /bin/chmod 700 "$state_dir"
@@ -895,6 +1054,7 @@ run_migration() {
         (( reused += 1 ))
         if ! replace_url_in_indexed_files "$url" "$migrated_url"; then
           (( failed += 1 ))
+          failed_urls+=("$url")
         fi
         continue
       fi
@@ -944,9 +1104,11 @@ run_migration() {
         fi
         if ! replace_url_in_indexed_files "$url" "$migrated_url"; then
           (( failed += 1 ))
+          failed_urls+=("$url")
         fi
       else
         (( failed += 1 ))
+        failed_urls+=("$url")
         case "$result_status" in
           download_failed)
             print -u2 -r -- "[${job_id}/${total}] Failed: download"
@@ -978,6 +1140,13 @@ run_migration() {
     print -r -- "Finished: uploaded ${uploaded}, reused ${reused}, failed ${failed}."
     (( failed == 0 )) || run_status=1
   fi
+  if (( ${#failed_urls} > 0 )); then
+    print
+    print -r -- "Failed URLs:"
+    for url in "${failed_urls[@]}"; do
+      print -r -- "  ${url}"
+    done
+  fi
 
   trap 'exit 130' INT TERM
   return "$run_status"
@@ -1007,6 +1176,7 @@ self_test() {
   local second_url='http://sns-webpic-qc.xhscdn.com/path/image!variant'
   local third_url='https://media.xhscdn.com/path/third-image'
   local fourth_url='https://media.xhscdn.com/path/fourth-image'
+  local bare_url='https://media.xhscdn.com/path/plain-link'
 
   (( parallel_transfers == 3 )) || return 1
 
@@ -1055,15 +1225,16 @@ self_test() {
   text_file="${test_dir}/images.txt"
   markdown_file="${test_dir}/note.md"
   long_markdown_file="${test_dir}/note.markdown"
-  /usr/bin/printf '\3771. %s\n2. %s\n' "$old_url" "$second_url" > "$text_file"
+  /usr/bin/printf '\377![image](%s)\n![](%s)\n' "$old_url" "$second_url" > "$text_file"
   {
     print -r -- "![image]($old_url)"
-    print -r -- "3. $third_url"
+    print -r -- "3. $bare_url"
+    print -r -- "![]($third_url)"
     print -r -- '4. https://example.com/not-selected.jpg'
   } > "$markdown_file"
   {
-    print -r -- "5. $old_url"
-    print -r -- "6. $fourth_url"
+    print -r -- "5. ![]( $old_url )"
+    print -r -- "6. ![image]($fourth_url)"
     print -r -- '5. https://i.ibb.co/already/migrated.webp'
   } > "$long_markdown_file"
 
