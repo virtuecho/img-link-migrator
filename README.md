@@ -51,7 +51,7 @@ field to `/api/1/upload`. A custom Chevereto site selected with
 
 ### Python features
 
-- Select one `.txt`, `.md`, or `.markdown` file or a whole folder from a native GUI.
+- Select multiple `.txt`, `.md`, or `.markdown` files and folders in the GUI.
 - Scan safely before making changes.
 - Migrate every external image host or restrict migration to selected domains.
 - Recognize only Markdown images such as `![Alt](URL)` (including empty alt
@@ -95,7 +95,8 @@ python3 img_link_migrator.py --gui
 
 Then:
 
-1. Choose a `.txt`, `.md`, or `.markdown` file or vault folder.
+1. Use **Add files** to multi-select `.txt`, `.md`, or `.markdown` files and
+   **Add folder** to add one or more folders. Remove selected targets as needed.
 2. Keep the default **PicGo.net (Chevereto)** provider or select **ImgBB**.
 3. Paste that provider's API key. It is kept in memory for the current run.
 4. Optionally enter one or more source domains, separated by commas.
@@ -234,15 +235,17 @@ python3 img_link_migrator.py \
 
 #### What the target path means
 
-The target is a `.txt`, `.md`, or `.markdown` file or directory to scan:
+The target can be one or more `.txt`, `.md`, or `.markdown` files and
+directories to scan:
 
 - `./note.md` means `note.md` in the current directory.
 - `./notes` means a child directory named `notes`. It is only an example.
 - `"$HOME/Documents/MyVault"` is an example vault under the current user's
   documents directory.
 
-Quote paths containing spaces or non-ASCII characters. On macOS, a file or
-folder can be dragged from Finder into Terminal to insert its real path.
+Quote paths containing spaces or non-ASCII characters. Pass multiple targets as
+separate arguments. On macOS, drag targets from Finder into Terminal to insert
+their paths.
 
 #### Common workflow
 
@@ -474,7 +477,7 @@ runtime it neither reads nor launches `img_link_migrator.py`.
 
 ### Standalone scope
 
-- Accept one `.txt`, `.md`, or `.markdown` file, or one directory.
+- Accept multiple `.txt`, `.md`, or `.markdown` files and directories.
 - Search a directory recursively while skipping hidden files and directories.
 - Scan file bytes directly without testing or converting the text encoding.
 - Scan Markdown image syntax in `.txt`, `.md`, and `.markdown` files.
@@ -524,7 +527,8 @@ The program asks only for the following information:
 
 1. Keep the default PicGo.net service or select ImgBB.
 2. Enter that service's API key. Typing is hidden for the current run.
-3. Drag one supported file or directory into Terminal and press Return.
+3. Drag one supported file or directory into Terminal and press Return. Repeat
+   for additional targets; submit an empty line when finished.
 4. Choose the source domains.
 5. Review the numbered source domains. Enter `N` to list all its image URLs.
    After inspection, press Return or enter `b` to return to the domain list, or

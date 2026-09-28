@@ -1636,7 +1636,6 @@ class MigratorGUI:
         self.root.geometry("1120x700")
         self.root.minsize(820, 560)
 
-        self.target_var = tk.StringVar()
         self.provider_var = tk.StringVar(value="PicGo.net (Chevereto)")
         self.key_var = tk.StringVar(
             value=os.environ.get(ENV_CHEVERETO_API_KEY, "")
@@ -1646,7 +1645,7 @@ class MigratorGUI:
         self.retries_var = tk.StringVar(value="3")
         self.backup_var = tk.BooleanVar(value=True)
         self.summary_var = tk.StringVar(
-            value="Choose a .txt, .md, .markdown file, or vault directory."
+            value="Add one or more files or folders to scan."
         )
         self.progress_var = tk.DoubleVar(value=0)
         self.event_queue: "queue.Queue[Tuple[str, object]]" = queue.Queue()
@@ -1657,7 +1656,7 @@ class MigratorGUI:
         self.last_domain_urls: Dict[str, List[str]] = {}
         self.skipped_domains: Set[str] = set()
         self.last_scan_urls: Set[str] = set()
-        self.last_scan_target: Optional[pathlib.Path] = None
+        self.last_scan_targets: Optional[Tuple[pathlib.Path, ...]] = None
         self.has_scan = False
         self.apply_run = False
         self.domain_choice_var = tk.StringVar()
@@ -1675,18 +1674,29 @@ class MigratorGUI:
         outer.columnconfigure(1, weight=1)
         outer.rowconfigure(10, weight=1)
 
-        ttk.Label(outer, text="File or directory").grid(
-            row=0, column=0, sticky="w", pady=4
+        target_frame = ttk.LabelFrame(outer, text="Files and folders to scan", padding=4)
+        target_frame.grid(row=0, column=0, columnspan=4, sticky="ew", pady=4)
+        target_frame.columnconfigure(0, weight=1)
+        self.target_listbox = self.tk.Listbox(
+            target_frame, height=3, selectmode="extended", exportselection=False
         )
-        ttk.Entry(outer, textvariable=self.target_var).grid(
-            row=0, column=1, sticky="ew", padx=8, pady=4
+        self.target_listbox.grid(row=0, column=0, sticky="ew")
+        target_scrollbar = ttk.Scrollbar(
+            target_frame, orient="vertical", command=self.target_listbox.yview
         )
-        ttk.Button(outer, text="Choose file", command=self._choose_file).grid(
-            row=0, column=2, padx=2
+        target_scrollbar.grid(row=0, column=1, sticky="ns")
+        self.target_listbox.configure(yscrollcommand=target_scrollbar.set)
+        target_actions = ttk.Frame(target_frame)
+        target_actions.grid(row=0, column=2, sticky="ns", padx=(6, 0))
+        ttk.Button(target_actions, text="Add files", command=self._choose_file).pack(
+            fill="x", pady=1
         )
-        ttk.Button(outer, text="Choose directory", command=self._choose_folder).grid(
-            row=0, column=3, padx=2
-        )
+        ttk.Button(
+            target_actions, text="Add folder", command=self._choose_folder
+        ).pack(fill="x", pady=1)
+        ttk.Button(
+            target_actions, text="Remove selected", command=self._remove_targets
+        ).pack(fill="x", pady=1)
 
         ttk.Label(outer, text="Upload provider").grid(
             row=1, column=0, sticky="w", pady=4
@@ -1828,26 +1838,40 @@ class MigratorGUI:
         self.key_var.set(os.environ.get(env_name, ""))
 
     def _choose_file(self) -> None:
-        selected = self.filedialog.askopenfilename(
-            title="Choose a Markdown text file",
+        selected = self.filedialog.askopenfilenames(
+            title="Choose Markdown text files",
             filetypes=[("Markdown text", "*.txt *.md *.markdown"), ("All files", "*")],
         )
-        if selected:
-            self.target_var.set(selected)
+        self._add_targets(selected)
 
     def _choose_folder(self) -> None:
         selected = self.filedialog.askdirectory(
             title="Choose a vault or directory"
         )
         if selected:
-            self.target_var.set(selected)
+            self._add_targets((selected,))
+
+    def _add_targets(self, selected: Sequence[str]) -> None:
+        existing = set(self.target_listbox.get(0, "end"))
+        for item in selected:
+            path = str(pathlib.Path(item).expanduser().resolve())
+            if path not in existing:
+                self.target_listbox.insert("end", path)
+                existing.add(path)
+
+    def _remove_targets(self) -> None:
+        for index in reversed(self.target_listbox.curselection()):
+            self.target_listbox.delete(index)
+
+    def _selected_targets(self) -> Tuple[pathlib.Path, ...]:
+        return tuple(pathlib.Path(path) for path in self.target_listbox.get(0, "end"))
 
     def _settings(
         self, apply: bool
-    ) -> Tuple[pathlib.Path, str, str, int, int, Tuple[str, ...], bool]:
-        target = pathlib.Path(self.target_var.get().strip()).expanduser()
-        if not self.target_var.get().strip() or not target.exists():
-            raise MigrationError("Choose a supported text file or directory.")
+    ) -> Tuple[Tuple[pathlib.Path, ...], str, str, int, int, Tuple[str, ...], bool]:
+        targets = self._selected_targets()
+        if not targets or any(not target.exists() for target in targets):
+            raise MigrationError("Add at least one existing file or folder.")
         try:
             expiration = int(self.expiration_var.get())
             retries = int(self.retries_var.get())
@@ -1864,7 +1888,7 @@ class MigratorGUI:
             raise MigrationError("Enter an API key for the selected provider.")
         hosts = _parse_hosts([self.include_var.get()])
         return (
-            target,
+            targets,
             provider,
             self.key_var.get().strip(),
             expiration,
@@ -1881,9 +1905,9 @@ class MigratorGUI:
         self.last_scan_urls = set()
         self.domain_choice_var.set("")
         self._update_domain_list()
-        self.last_scan_target = pathlib.Path(
-            self.target_var.get().strip()
-        ).expanduser().resolve()
+        self.last_scan_targets = tuple(
+            target.expanduser().resolve() for target in self._selected_targets()
+        )
         self._start(False, None)
 
     def _migrate(self) -> None:
@@ -1892,8 +1916,10 @@ class MigratorGUI:
                 "Scan first", "Scan the selected files to review image links and domains."
             )
             return
-        target = pathlib.Path(self.target_var.get().strip()).expanduser().resolve()
-        if target != self.last_scan_target:
+        targets = tuple(
+            target.expanduser().resolve() for target in self._selected_targets()
+        )
+        if targets != self.last_scan_targets:
             self.messagebox.showinfo(
                 "Scan again", "The selected target changed. Scan it before migration."
             )
@@ -2054,7 +2080,7 @@ class MigratorGUI:
             return
         try:
             (
-                target,
+                targets,
                 provider,
                 api_key,
                 expiration,
@@ -2105,7 +2131,7 @@ class MigratorGUI:
                     backup_enabled=backup_enabled,
                     cache_namespace=_provider_cache_namespace(provider),
                 )
-                report = engine.run([target], apply=apply, only_urls=only_urls)
+                report = engine.run(targets, apply=apply, only_urls=only_urls)
                 self.event_queue.put(("done", report))
             except Exception as exc:
                 self.event_queue.put(("error", exc))

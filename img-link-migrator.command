@@ -16,6 +16,7 @@ readonly DEFAULT_UPLOAD_INTERVAL_SECONDS=1.21
 readonly UPLOAD_RATE_COOLDOWN_SECONDS=60
 readonly CHEVERETO_URL="https://www.picgo.net"
 
+typeset -a target_paths
 typeset -a target_files
 typeset -a urls
 typeset -a source_hosts
@@ -24,7 +25,7 @@ typeset -A url_file_indexes
 typeset -i reference_count=0
 
 api_key=""
-target_path=""
+target_paths=()
 all_hosts=false
 provider="chevereto"
 provider_name="PicGo.net"
@@ -131,32 +132,48 @@ trim_url_suffix() {
 collect_target_files() {
   local candidate
   local extension
+  local root
+  local -A seen_files
   target_files=()
+  seen_files=()
 
-  if [[ -f "$target_path" ]]; then
-    extension="${target_path:e:l}"
-    if [[ "$extension" != "txt" && "$extension" != "md" && "$extension" != "markdown" ]]; then
-      fail "Select a .txt, .md, or .markdown file."
-      return 1
-    fi
-    target_files+=("${target_path:A}")
-    return 0
-  fi
-
-  if [[ ! -d "$target_path" ]]; then
-    fail "The selected target does not exist."
+  if (( ${#target_paths} == 0 )); then
+    fail "Add at least one file or directory."
     return 1
   fi
 
-  while IFS= read -r -d '' candidate; do
-    target_files+=("${candidate:A}")
-  done < <(
-    /usr/bin/find "$target_path" \
-      -type d -name '.*' -prune -o \
-      -type f ! -name '.*' \
-      \( -iname '*.txt' -o -iname '*.md' -o -iname '*.markdown' \) \
-      -print0
-  )
+  for root in "${target_paths[@]}"; do
+    root="${root:A}"
+    if [[ -f "$root" ]]; then
+      extension="${root:e:l}"
+      if [[ "$extension" != "txt" && "$extension" != "md" && "$extension" != "markdown" ]]; then
+        fail "Select .txt, .md, or .markdown files."
+        return 1
+      fi
+      if [[ -z "${seen_files[$root]-}" ]]; then
+        target_files+=("$root")
+        seen_files[$root]=true
+      fi
+    elif [[ -d "$root" ]]; then
+      while IFS= read -r -d '' candidate; do
+        candidate="${candidate:A}"
+        if [[ -z "${seen_files[$candidate]-}" ]]; then
+          target_files+=("$candidate")
+          seen_files[$candidate]=true
+        fi
+      done < <(
+        /usr/bin/find "$root" \
+          -type d -name '.*' -prune -o \
+          -type f ! -name '.*' \
+          \( -iname '*.txt' -o -iname '*.md' -o -iname '*.markdown' \) \
+          -print0
+      )
+    else
+      fail "The selected target does not exist: $root"
+      return 1
+    fi
+  done
+  return 0
 }
 
 markdown_image_urls() {
@@ -921,12 +938,16 @@ prompt_settings() {
     return 1
   fi
 
-  read -r "target_input?Drag one supported file or directory here, then press Return: "
-  [[ -n "$target_input" ]] || {
-    fail "A target is required."
+  target_paths=()
+  while true; do
+    read -r "target_input?Drag one file or folder here and press Return (empty line to finish): " || break
+    [[ -n "$target_input" ]] || break
+    target_paths+=("${(Q)target_input}")
+  done
+  (( ${#target_paths} > 0 )) || {
+    fail "Add at least one file or directory."
     return 1
   }
-  target_path="${(Q)target_input}"
 
   print
   print -r -- "Choose where the original image links come from:"
@@ -956,6 +977,7 @@ prompt_settings() {
 
 show_scan_summary() {
   local source_description
+  local target
   local url
   local host
   local start_input
@@ -983,7 +1005,10 @@ show_scan_summary() {
   done
 
   print
-  print -r -- "Target: ${target_path:A}"
+  print -r -- "Targets: ${#target_paths}"
+  for target in "${target_paths[@]}"; do
+    print -r -- "  ${target:A}"
+  done
   print -r -- "Supported files: ${#target_files}"
   print -r -- "Matching URL references: ${reference_count}"
   print -r -- "Unique matching URLs: ${#urls}"
@@ -1368,7 +1393,7 @@ self_test() {
     print -r -- '5. https://i.ibb.co/already/migrated.webp'
   } > "$long_markdown_file"
 
-  target_path="$test_dir"
+  target_paths=("$test_dir")
   source_hosts=("xhscdn.com")
   all_hosts=false
   collect_target_files || return 1
