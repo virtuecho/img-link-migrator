@@ -6,7 +6,7 @@
 
 1. `img_link_migrator.py`：Python Markdown GUI/CLI。
 2. `img-link-migrator.command`：处理 `.txt`、`.md` 和 `.markdown` 文件中
-   Markdown 图片语法的 macOS 单文件程序。
+   Markdown 图片语法，并且只在 `.txt` 中识别裸 URL 的 macOS 单文件程序。
 
 两个程序分别拥有自己的运行环境、扫描规则、输入提示、缓存和安全行为。一套程序的
 文档不适用于另一套程序。两个程序都支持以下上传目标：
@@ -15,11 +15,44 @@
 - 基于 [Chevereto API v1](https://v4-docs.chevereto.com/api/1/file-upload.html)
   的 [PicGo.net API v1.1](https://www.picgo.net/api-v1/?lang=en)
 
+## 链接识别规则
+
+两个程序对 `.txt`、`.md` 和 `.markdown` 使用以下规则：
+
+| 文件扩展名 | Markdown 行内图片、已使用的引用式图片和 HTML `<img src>` | 裸 HTTP(S) URL |
+| --- | --- | --- |
+| `.txt` | 识别 | 识别 |
+| `.md`、`.markdown` | 识别 | 不识别 |
+
+**当且仅当文件扩展名是 `.txt` 时，程序才识别裸 HTTP(S) URL。**例如，
+`notes.txt` 中单独一行的 `https://images.example.com/a` 会成为候选链接；同一行
+位于 `notes.md` 或 `notes.markdown` 时则不会。`.txt` 中所有符合所选来源域名的
+裸 HTTP(S) URL 都会成为候选，不要求 URL 以图片扩展名结尾。下载后不会检查内容特征
+来判断它是不是图片。
+
+三种扩展名都识别以下图片语法：
+
+- Markdown 行内图片，例如 `![说明](https://example.com/a.png)` 和 `![](URL)`。
+- 已实际使用的完整引用式图片，例如 `![说明][photo]`，以及对应的
+  `[photo]: URL` 定义；没有被引用的定义会忽略。
+- `src` 属性为 HTTP(S) URL 的 HTML `<img>` 元素，支持带引号和不带引号的属性值。
+
+`.txt` 的裸 URL 规则不会把普通 Markdown 链接（例如 `[网站](URL)`）、HTML 链接
+（例如 `<a href="URL">`）或尖括号自动链接（例如 `<URL>`）当作图片候选。
+Obsidian 本地附件语法 `![[image.png]]` 也不是外部 URL，因此不会改动。两个扫描器
+都会跳过 YAML frontmatter、围栏代码块和行内代码。
+
+候选链接还必须符合所选来源域名规则；域名规则同时包含该域名及其子域名。属于所选
+上传目标平台的链接会排除。Python 的域名筛选为空时表示所有外部域名；独立单文件工具
+默认只选择 `xhscdn.com` 及其子域名，也可以输入 `*` 选择所有域名。
+
+Python CLI/GUI 和 `.command` 的启动界面都会提示：**当且仅当文件是 `.txt` 时才识别
+裸 HTTP(S) URL。**
+
 ## Python Markdown GUI/CLI
 
-Python 程序主要面向 Obsidian vault 和其他 UTF-8 文本文件；`.txt`、`.md` 和
-`.markdown` 都按同一套 Markdown 图片规则处理。它理解常见的
-Markdown 图片语法，不会把文件中的每一个 URL 都当作图片。
+Python 程序主要面向 Obsidian vault 和其他 UTF-8 文本文件。所有支持的扩展名都识别
+常见 Markdown 图片语法，只有 `.txt` 会额外识别裸 HTTP(S) URL。
 
 ### Python 上传平台
 
@@ -50,7 +83,7 @@ GUI 提供固定的 PicGo.net 选项。Python CLI 选择 `chevereto` 时，会�
 - 通过原生 GUI 选择单个 `.txt`、`.md`、`.markdown` 文件或整个文件夹。
 - 正式迁移前先安全扫描，不修改文件。
 - 可以迁移所有外链图片，也可以限定指定来源域名。
-- 只识别 Markdown 图片 `![说明](URL)`（包括空说明 `![](URL)`）、Markdown 引用式图片和 HTML `<img src="URL">`。
+- 识别 Markdown 行内图片、已使用的引用式图片和 HTML `<img src="URL">`；裸 HTTP(S) URL 只在 `.txt` 文件中识别。
 - 自动跳过 YAML 属性区、代码块、行内代码、隐藏文件夹和所选目标平台的现有链接。
 - 下载所选链接，并执行本地 32 MB 大小限制；下载后不按文件内容特征验证图片类型。
 - 显示每张图片的进度、缓存复用、成功和失败详情。
@@ -369,7 +402,7 @@ URL/图片内容缓存以及可选备份都保存在所选 vault 之外：
 持久化缓存会保存源 URL、图片 SHA-256、目标 URL、平台命名空间和过期时间，不会
 保存 API key。
 
-### Python 支持的 Markdown 格式
+### Python 支持的图片语法
 
 ```markdown
 ![说明文字](https://example.com/image.png)
@@ -382,9 +415,17 @@ URL/图片内容缓存以及可选备份都保存在所选 vault 之外：
 [image-id]: https://example.com/image.webp
 ```
 
-普通链接（例如 `[网站](https://example.com/)`）和 Obsidian 本地附件嵌入
-（例如 `![[image.png]]`）不会被当作外链图片处理。Obsidian 的外链图片使用
-`![](URL)` 这样的 Markdown 图片语法。
+`.txt` 文件中的裸 URL 也会作为候选：
+
+```text
+https://example.com/a
+```
+
+同一行裸 URL 位于 `.md` 或 `.markdown` 文件时会忽略。
+
+普通链接（例如 `[网站](https://example.com/)`）即使位于 `.txt` 文件中，也不会被当作
+图片处理。Obsidian 本地附件嵌入（例如 `![[image.png]]`）同样不会处理；Obsidian
+外链图片使用 `![](URL)` 这样的 Markdown 图片语法。
 
 ### Python 安全处理流程
 
@@ -441,8 +482,8 @@ python3 -m py_compile img_link_migrator.py
 
 ### Python 程序限制
 
-- Python GUI/CLI 使用相同的 Markdown 图片规则处理 UTF-8 编码的 `.txt`、`.md` 和
-  `.markdown` 文件。
+- Python GUI/CLI 读取 UTF-8 编码的 `.txt`、`.md` 和 `.markdown` 文件。只有 `.txt`
+  会额外识别裸 HTTP(S) URL；其他扩展名要求使用图片语法。
 - 需要浏览器登录状态才能访问的源图片可能无法下载。对于小红书 CDN，程序会自动把
   小红书网站设置为 HTTP Referer，这可以处理许多公开图片链接。
 - URL 解析主要支持 Obsidian 和 Markdown 的常见图片语法。自定义插件生成的非标准
@@ -457,10 +498,10 @@ python3 -m py_compile img_link_migrator.py
 
 ### 单文件工具的处理范围
 
-- 接受一个 `.txt`、`.md` 或 `.markdown` 文件，或者一个文件夹；三种扩展名使用相同扫描规则。
+- 接受一个 `.txt`、`.md` 或 `.markdown` 文件，或者一个文件夹；三种扩展名都识别图片语法，只有 `.txt` 额外识别裸 URL。
 - 递归搜索文件夹，同时跳过隐藏文件和隐藏目录。
 - 直接扫描文件字节，不检测或转换文本编码。
-- 只扫描 Markdown 图片语法 `![说明](URL)`（包括 `![](URL)`）、已使用的引用式图片和 HTML `<img src="URL">`。
+- 所有支持文件都扫描 Markdown 图片语法；裸 HTTP(S) URL 只在 `.txt` 文件中识别。
 - 按来源域名筛选 URL；默认域名是 `xhscdn.com` 及其全部子域名。
 - 初次扫描时建立 URL 到文件的索引；上传完成后只检查原本包含该 URL 的文件。
 - 同时缓存来源 URL 和下载图片的 SHA-256；已知的相同图片会直接复用目标 URL，
@@ -478,9 +519,12 @@ python3 -m py_compile img_link_migrator.py
 - 任一任务上传成功后，由主进程串行处理文件，并通过原子写入立即替换索引中的全部
   相同 URL。
 
-所有支持的文件都使用相同规则：单文件工具只扫描 Markdown 图片 `![说明](URL)`
-（包括 `![](URL)`）、已使用的引用式图片和 HTML `<img src="URL">`，并跳过属性区、
-代码块和行内代码。下载后不再根据文件内容判断链接是否为图片。
+单文件工具在 `.txt`、`.md` 和 `.markdown` 中识别 Markdown 行内图片
+（`![说明](URL)` 和 `![](URL)`）、已使用的完整引用式图片，以及 HTML
+`<img src="URL">`。只有 `.txt` 文件还会识别所有符合所选来源域名的裸 HTTP(S) URL，
+不要求图片扩展名。普通 Markdown 链接、HTML `href` 和尖括号自动链接不会按裸 URL
+处理。程序跳过 YAML frontmatter、围栏代码块和行内代码；下载后不根据内容特征判断
+链接是否为图片。
 
 ### 单文件工具要求
 
@@ -527,7 +571,7 @@ Your choice [1]:
 Choose where the original image links come from:
   Press Return to use xhscdn.com and its subdomains.
   Or type domains separated by commas: xhscdn.com,example.com
-  Or type * to check every domain; scanning still requires image syntax.
+  Or type * to check every domain; bare URLs are included only from .txt.
 Your choice [xhscdn.com]:
 ```
 
@@ -536,7 +580,7 @@ Your choice [xhscdn.com]:
 | 不输入内容，直接按回车 | `xhscdn.com` 及其全部子域名中的 URL。 |
 | `example.com` | `example.com` 及其全部子域名中的 URL。 |
 | `xhscdn.com,example.com` | 两个所列域名及其子域名中的 URL。 |
-| `*` | 所有域名中符合图片语法的 URL。 |
+| `*` | 所有域名中符合图片语法的 URL，以及 `.txt` 文件中的裸 URL。 |
 
 程序不再询问 worker 数量。内部会自动重叠最多 3 个下载任务，但所有 worker 共用
 同一个上传时间表。PicGo.net 和 ImgBB 的上传请求开始时间至少间隔 1.21 秒，使速度
@@ -582,6 +626,14 @@ Your choice [xhscdn.com]:
 ------------------------
 1. ![](https://sns-webpic-qc.xhscdn.com/path/to/image)
 ```
+
+如果来源域名符合所选规则，`.txt` 文件中的裸 URL 也会识别：
+
+```text
+https://sns-webpic-qc.xhscdn.com/path/to/image
+```
+
+同一个裸 URL 如果位于 `.md` 或 `.markdown` 文件中，除非改写为以上图片语法，否则会忽略。
 
 上传成功后，只会改变 URL：
 

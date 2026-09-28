@@ -244,6 +244,10 @@ _MARKDOWN_IMAGE_RE = re.compile(
     r"(?P<plain>https?://[^\s)\r\n]+))",
     re.IGNORECASE,
 )
+_BARE_URL_RE = re.compile(
+    r"""(?<![\w<"'=])https?://[^\s<"']+""",
+    re.IGNORECASE,
+)
 _HTML_IMAGE_RE = re.compile(
     r"<img\b[^>]*?\s+src\s*=\s*(?:"
     r'"(?P<double>https?://[^\"]+)"|'
@@ -334,6 +338,21 @@ def extract_image_references(
             group = "angle" if definition.group("angle") is not None else "plain"
             start, end = definition.span(group)
             add(original[start:end], offset + start, offset + end, "reference")
+
+    if path.suffix.lower() == ".txt":
+        for offset, original, masked in allowed_lines:
+            if _REFERENCE_DEF_RE.match(masked):
+                continue
+            for match in _BARE_URL_RE.finditer(masked):
+                start, end = match.span()
+                prefix = masked[:start]
+                if re.search(r"\]\(\s*$", prefix) or re.search(
+                    r"<[^>]*\b(?:src|href)\s*=\s*$", prefix, re.IGNORECASE
+                ):
+                    continue
+                while end > start and original[end - 1] in ".,;)]}":
+                    end -= 1
+                add(original[start:end], offset + start, offset + end, "bare")
 
     references.sort(key=lambda item: item.start)
     return references
@@ -1415,6 +1434,7 @@ class CLIProgress:
 
 
 def _run_cli(args: argparse.Namespace) -> int:
+    print("Bare HTTP(S) URLs are recognized if and only if the file is .txt.")
     targets = [pathlib.Path(item) for item in args.targets]
     if not targets:
         raise MigrationError("Specify at least one .txt, .md, .markdown file, or directory.")
@@ -1729,8 +1749,11 @@ class MigratorGUI:
             text=(
                 "Leave empty for every external image host; separate hosts "
                 "with commas. Existing links from the selected destination "
-                "are skipped."
+                "are skipped.\nBare HTTP(S) URLs are recognized if and only "
+                "if the file is .txt."
             ),
+            wraplength=1000,
+            justify="left",
         ).grid(row=4, column=1, columnspan=3, sticky="w", padx=8)
 
         options = ttk.Frame(outer)

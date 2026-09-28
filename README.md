@@ -6,7 +6,8 @@ This repository contains two independent image-link migration programs:
 
 1. A Python Markdown GUI/CLI in `img_link_migrator.py`.
 2. A self-contained macOS program in `img-link-migrator.command` for Markdown
-   image syntax in `.txt`, `.md`, and `.markdown` files.
+   image syntax in `.txt`, `.md`, and `.markdown` files, plus bare URLs in
+   `.txt` files only.
 
 Each program has its own runtime, scanning rules, prompts, cache, and safety
 behavior. The documentation for one program does not apply to the other.
@@ -16,11 +17,48 @@ Both programs support these upload destinations:
 - [PicGo.net API v1.1](https://www.picgo.net/api-v1/?lang=en), based on the
   [Chevereto API v1](https://v4-docs.chevereto.com/api/1/file-upload.html)
 
+## Link detection rules
+
+Both programs apply these rules to `.txt`, `.md`, and `.markdown` files:
+
+| File extension | Markdown inline images, used reference images, and HTML `<img src>` | Bare HTTP(S) URLs |
+| --- | --- | --- |
+| `.txt` | Recognized | Recognized |
+| `.md`, `.markdown` | Recognized | Not recognized |
+
+Bare HTTP(S) URLs are recognized **if and only if the file extension is
+`.txt`**. For example, a line containing only `https://images.example.com/a`
+is a candidate in `notes.txt`, but not in `notes.md` or `notes.markdown`.
+In `.txt` files, every bare HTTP(S) URL under the selected source domains is a
+candidate; there is no filename-extension check. The scanner does not inspect
+downloaded content to decide whether a candidate is an image.
+
+The Markdown image syntax recognized in all three extensions is:
+
+- Inline images such as `![alt](https://example.com/a.png)` and `![](URL)`.
+- Used full reference images, such as `![alt][photo]` with a matching
+  `[photo]: URL` definition. Unused definitions are ignored.
+- HTML `<img>` elements whose `src` value is an HTTP(S) URL, quoted or
+  unquoted.
+
+The `.txt` bare-URL rule does not turn ordinary Markdown links such as
+`[website](URL)`, HTML links such as `<a href="URL">`, or angle-bracket URL
+autolinks such as `<URL>` into image candidates. Obsidian's local embed syntax
+`![[image.png]]` is also not an external URL and is left unchanged. YAML
+frontmatter, fenced code blocks, and inline code are skipped by both scanners.
+
+Candidates must match the selected source-host rules; host rules include the
+specified domain and its subdomains. Links belonging to the selected upload
+destination are excluded. Python treats an empty host filter as all external
+hosts; the standalone program defaults to `xhscdn.com` and its subdomains and
+also offers `*` for all hosts. The Python CLI/GUI and standalone startup screen
+state that bare HTTP(S) URLs are recognized if and only if the file is `.txt`.
+
 ## Python Markdown GUI/CLI
 
-The Python program is designed for Obsidian vaults and other UTF-8 Markdown
-files. It understands common Markdown image syntax rather than treating every
-URL as an image.
+The Python program is designed for Obsidian vaults and other UTF-8 text files.
+It recognizes common Markdown image syntax in all supported extensions and
+also recognizes bare HTTP(S) URLs in `.txt` files only.
 
 ### Python upload providers
 
@@ -54,8 +92,8 @@ field to `/api/1/upload`. A custom Chevereto site selected with
 - Select multiple `.txt`, `.md`, or `.markdown` files and folders in the GUI.
 - Scan safely before making changes.
 - Migrate every external image host or restrict migration to selected domains.
-- Recognize only Markdown images such as `![Alt](URL)` (including empty alt
-  text as `![](URL)`), referenced Markdown images, and HTML `<img src="URL">`.
+- Recognize Markdown inline and used reference images, HTML `<img src="URL">`,
+  and bare HTTP(S) URLs in `.txt` files only.
 - Skip YAML frontmatter, fenced code blocks, inline code, hidden folders, and
   existing links from the selected destination.
 - Download each selected URL and enforce a 32 MB local size limit without
@@ -378,7 +416,7 @@ The persistent cache contains source URLs, SHA-256 image hashes, destination
 URLs, provider namespaces, and expiration timestamps. It never contains API
 keys.
 
-### Supported Markdown syntax
+### Supported image syntax
 
 ```markdown
 ![alt text](https://example.com/image.png)
@@ -391,10 +429,18 @@ keys.
 [image-id]: https://example.com/image.webp
 ```
 
-Normal links such as `[website](https://example.com/)` are intentionally not
-treated as images. Obsidian's local attachment embeds such as `![[image.png]]`
-are left alone; externally hosted images use Markdown image syntax like
-`![](URL)`.
+In a `.txt` file, a bare URL is also a candidate:
+
+```text
+https://example.com/a
+```
+
+That same line is ignored as a bare URL in `.md` and `.markdown` files.
+
+Normal links such as `[website](https://example.com/)` are not treated as
+images, even in `.txt` files. Obsidian's local attachment embeds such as
+`![[image.png]]` are left alone; externally hosted images use Markdown image
+syntax like `![](URL)`.
 
 ### Python safety model
 
@@ -460,8 +506,9 @@ The tests use fake ImgBB and Chevereto responses and do not perform uploads.
 
 ### Python tool limitations
 
-- The Python GUI/CLI modifies UTF-8 `.txt`, `.md`, and `.markdown` files using
-  the same Markdown image syntax rules.
+- The Python GUI/CLI reads UTF-8 `.txt`, `.md`, and `.markdown` files. Only
+  `.txt` also recognizes bare HTTP(S) URLs; the other extensions require image
+  syntax.
 - Source images that require an authenticated browser session may fail to
   download. Xiaohongshu CDN requests automatically include the Xiaohongshu
   website as the HTTP referrer, which is sufficient for many public links.
@@ -480,7 +527,8 @@ runtime it neither reads nor launches `img_link_migrator.py`.
 - Accept multiple `.txt`, `.md`, or `.markdown` files and directories.
 - Search a directory recursively while skipping hidden files and directories.
 - Scan file bytes directly without testing or converting the text encoding.
-- Scan Markdown image syntax in `.txt`, `.md`, and `.markdown` files.
+- Scan Markdown image syntax in all supported files and bare HTTP(S) URLs in
+  `.txt` files only.
 - Filter URLs by source domain; the default is `xhscdn.com` and its subdomains.
 - Build a URL-to-files index during the initial scan so a completed upload only
   checks files that originally contained that URL.
@@ -503,10 +551,14 @@ runtime it neither reads nor launches `img_link_migrator.py`.
 - As each transfer succeeds, serialize its file updates and immediately replace
   indexed image links with atomic file writes.
 
-In all supported files, the standalone tool scans only Markdown images such as
-`![Alt](URL)` (including `![](URL)`), used reference-style images, and HTML
-`<img src="URL">`; it skips frontmatter, code blocks, and inline code. It does
-not inspect downloaded bytes to decide whether a link is an image.
+For `.txt`, `.md`, and `.markdown`, the standalone scanner recognizes inline
+Markdown images (`![Alt](URL)` and `![](URL)`), used full reference images, and
+HTML `<img src="URL">`. It additionally recognizes every bare HTTP(S) URL
+matching the selected source domains in `.txt` files only; it does not require
+an image filename extension. A URL used as a regular Markdown link, HTML
+`href`, or angle-bracket autolink is not treated as a bare URL. It skips YAML
+frontmatter, fenced code blocks, and inline code. It does not inspect
+downloaded bytes to decide whether a candidate is an image.
 
 ### Standalone requirements
 
@@ -559,7 +611,7 @@ The source explanation displayed by the program is:
 Choose where the original image links come from:
   Press Return to use xhscdn.com and its subdomains.
   Or type domains separated by commas: xhscdn.com,example.com
-  Or type * to check every domain; scanning still requires image syntax.
+  Or type * to check every domain; bare URLs are included only from .txt.
 Your choice [xhscdn.com]:
 ```
 
@@ -568,7 +620,7 @@ Your choice [xhscdn.com]:
 | Press Return without typing | URLs from `xhscdn.com` and any of its subdomains. |
 | `example.com` | URLs from `example.com` and its subdomains. |
 | `xhscdn.com,example.com` | URLs from either listed domain and their subdomains. |
-| `*` | Image-syntax URLs from every domain. |
+| `*` | Image-syntax URLs from every domain, plus bare URLs in `.txt` files. |
 
 There is no worker-count question. The tool automatically overlaps up to three
 downloads, but all workers share one upload schedule. PicGo.net and ImgBB
@@ -617,13 +669,23 @@ keys. Moving the `.command` file does not affect these caches.
 
 ### Standalone example
 
-This image syntax works in all supported files:
+This Markdown image syntax works in all supported files:
 
 ```text
 Images
 ------------------------
 1. ![](https://sns-webpic-qc.xhscdn.com/path/to/image)
 ```
+
+A bare URL is also recognized in `.txt` files when its host matches the
+selected source domains:
+
+```text
+https://sns-webpic-qc.xhscdn.com/path/to/image
+```
+
+The same bare URL in `.md` or `.markdown` is ignored unless it is written using
+one of the supported image syntaxes above.
 
 After a successful upload, only the URL changes:
 

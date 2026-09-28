@@ -229,6 +229,18 @@ markdown_image_urls() {
         print((defined $2 ? $2 : $3), "\n") if $reference_ids{$id};
       }
     }
+    if ($ARGV =~ /\.txt\z/i) {
+      for my $line (@lines) {
+        next if $line =~ /^\s*\[[^\]\r\n]+\]:/;
+        while ($line =~ /(?<![\w<"=\x27])https?:\/\/[^\s<"\x27]+/ig) {
+          my $url = $&;
+          my $prefix = substr($line, 0, $-[0]);
+          next if $prefix =~ /\]\(\s*$/;
+          next if $prefix =~ /<[^>]*\b(?:src|href)\s*=\s*$/i;
+          print($url, "\n");
+        }
+      }
+    }
   ' "$1"
 }
 
@@ -903,6 +915,7 @@ prompt_settings() {
 
   print -r -- "${APP_NAME} ${APP_VERSION}"
   print -r -- "Scans Markdown image syntax in .txt, .md, and .markdown files."
+  print -r -- "Bare HTTP(S) URLs are recognized if and only if the file is .txt."
   print
 
   print -r -- "Choose the upload service:"
@@ -953,7 +966,7 @@ prompt_settings() {
   print -r -- "Choose where the original image links come from:"
   print -r -- "  Press Return to use xhscdn.com and its subdomains."
   print -r -- "  Or type domains separated by commas: xhscdn.com,example.com"
-  print -r -- "  Or type * to check every domain; Markdown still needs image syntax."
+  print -r -- "  Or type * to check every domain; bare URLs are included only from .txt."
   read -r "source_input?Your choice [xhscdn.com]: "
   source_input="${source_input:l}"
   source_input="${source_input//[[:space:]]/}"
