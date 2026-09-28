@@ -34,6 +34,7 @@ from typing import Callable, Dict, Iterable, List, Optional, Sequence, Set, Tupl
 APP_NAME = "IMG Link Migrator"
 APP_VERSION = "0.6.0"
 ENV_IMGBB_API_KEY = "IMGBB_API_KEY"
+ENV_PICGO_API_KEY = "PICGO_API_KEY"
 ENV_CHEVERETO_API_KEY = "CHEVERETO_API_KEY"
 DEFAULT_PROVIDER = "chevereto"
 IMGBB_CACHE_NAMESPACE = "imgbb"
@@ -584,11 +585,11 @@ def _multipart_file_body(
 def _normalize_chevereto_base_url(base_url: str) -> str:
     parsed = urllib.parse.urlsplit(base_url.strip())
     if parsed.scheme != "https" or not parsed.hostname:
-        raise MigrationError("Chevereto base URL must be a valid HTTPS URL.")
+        raise MigrationError("PicGo API base URL must be a valid HTTPS URL.")
     if parsed.username or parsed.password:
-        raise MigrationError("Chevereto base URL cannot contain credentials.")
+        raise MigrationError("PicGo API base URL cannot contain credentials.")
     if parsed.query or parsed.fragment:
-        raise MigrationError("Chevereto base URL cannot contain a query or fragment.")
+        raise MigrationError("PicGo API base URL cannot contain a query or fragment.")
     clean_path = parsed.path.rstrip("/")
     return urllib.parse.urlunsplit(
         (parsed.scheme, parsed.netloc, clean_path, "", "")
@@ -779,8 +780,8 @@ class ImgBBClient(BaseUploadClient):
 
 
 class CheveretoClient(BaseUploadClient):
-    provider_name = "Chevereto"
-    environment_variable = ENV_CHEVERETO_API_KEY
+    provider_name = "PicGo.net"
+    environment_variable = ENV_PICGO_API_KEY
 
     def __init__(
         self,
@@ -817,7 +818,7 @@ class CheveretoClient(BaseUploadClient):
             with urllib.request.urlopen(request, timeout=60) as response:
                 payload = json.loads(response.read().decode("utf-8"))
         except urllib.error.HTTPError as exc:
-            fallback = "Chevereto {} returned HTTP {}.".format(action, exc.code)
+            fallback = "PicGo.net {} returned HTTP {}.".format(action, exc.code)
             try:
                 payload = json.loads(exc.read().decode("utf-8", errors="replace"))
                 error_message = self._error_message(payload, "")
@@ -839,12 +840,12 @@ class CheveretoClient(BaseUploadClient):
             raise MigrationError(fallback.strip()) from None
         except urllib.error.URLError as exc:
             raise MigrationError(
-                "Could not reach Chevereto: {}".format(exc.reason)
+                "Could not reach PicGo.net: {}".format(exc.reason)
             ) from None
         except ValueError:
-            raise MigrationError("Chevereto returned an invalid response.") from None
+            raise MigrationError("PicGo.net returned an invalid response.") from None
         if not isinstance(payload, dict):
-            raise MigrationError("Chevereto returned an invalid response.")
+            raise MigrationError("PicGo.net returned an invalid response.")
         return payload
 
     def upload(self, data: bytes, content_type: str, filename: str, url: str) -> str:
@@ -882,7 +883,7 @@ class CheveretoClient(BaseUploadClient):
                 or payload.get("status_code") not in {200, "200"}
             ) and not duplicate_upload:
                 raise MigrationError(
-                    "Chevereto upload failed: {}".format(
+                    "PicGo.net upload failed: {}".format(
                         error_message
                     )
                 )
@@ -893,7 +894,7 @@ class CheveretoClient(BaseUploadClient):
             parsed = urllib.parse.urlsplit(new_url or "")
             if parsed.scheme not in {"http", "https"} or not parsed.hostname:
                 raise MigrationError(
-                    "Chevereto response does not contain a valid image URL."
+                    "PicGo.net response does not contain a valid image URL."
                 )
             return new_url
 
@@ -1261,8 +1262,15 @@ def _provider_environment_variable(provider: str) -> str:
     if provider == "imgbb":
         return ENV_IMGBB_API_KEY
     if provider == "chevereto":
-        return ENV_CHEVERETO_API_KEY
+        return ENV_PICGO_API_KEY
     raise MigrationError("Unsupported upload provider: {}".format(provider))
+
+
+def _provider_api_key_from_environment(provider: str) -> str:
+    value = os.environ.get(_provider_environment_variable(provider), "")
+    if not value and provider == "chevereto":
+        value = os.environ.get(ENV_CHEVERETO_API_KEY, "")
+    return value
 
 
 def _provider_excluded_hosts(
@@ -1566,10 +1574,9 @@ def _run_cli(args: argparse.Namespace) -> int:
     cancel_event = threading.Event()
     client = None
     if args.apply and selected_urls:
-        env_name = _provider_environment_variable(args.provider)
         client = _create_upload_client(
             args.provider,
-            args.api_key or os.environ.get(env_name, ""),
+            args.api_key or _provider_api_key_from_environment(args.provider),
             args.expiration,
             args.retries,
             cli_progress,
@@ -1656,9 +1663,9 @@ class MigratorGUI:
         self.root.geometry("1120x700")
         self.root.minsize(820, 560)
 
-        self.provider_var = tk.StringVar(value="PicGo.net (Chevereto)")
+        self.provider_var = tk.StringVar(value="PicGo.net")
         self.key_var = tk.StringVar(
-            value=os.environ.get(ENV_CHEVERETO_API_KEY, "")
+            value=_provider_api_key_from_environment("chevereto")
         )
         self.include_var = tk.StringVar()
         self.expiration_var = tk.StringVar(value="0")
@@ -1724,7 +1731,7 @@ class MigratorGUI:
         provider_box = ttk.Combobox(
             outer,
             textvariable=self.provider_var,
-            values=("PicGo.net (Chevereto)", "ImgBB"),
+            values=("PicGo.net", "ImgBB"),
             state="readonly",
         )
         provider_box.grid(
@@ -1852,13 +1859,12 @@ class MigratorGUI:
 
     def _provider_changed(self, _event: object = None) -> None:
         provider = self._provider_id()
-        env_name = _provider_environment_variable(provider)
         self.key_label.configure(
             text="{} API key".format(
                 "PicGo.net" if provider == "chevereto" else "ImgBB"
             )
         )
-        self.key_var.set(os.environ.get(env_name, ""))
+        self.key_var.set(_provider_api_key_from_environment(provider))
 
     def _choose_file(self) -> None:
         selected = self.filedialog.askopenfilenames(
@@ -2316,6 +2322,15 @@ class MigratorGUI:
         self.root.mainloop()
 
 
+def _parse_provider_argument(value: str) -> str:
+    value = value.strip().lower()
+    if value in {"picgo", "picgo.net", "chevereto"}:
+        return "chevereto"
+    if value == "imgbb":
+        return "imgbb"
+    raise argparse.ArgumentTypeError("Choose PicGo or ImgBB.")
+
+
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description="Migrate external Markdown images to a supported image host."
@@ -2337,20 +2352,28 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--provider",
-        choices=("imgbb", "chevereto"),
+        type=_parse_provider_argument,
+        metavar="NAME",
         default=DEFAULT_PROVIDER,
-        help="Upload provider: imgbb or chevereto (default: chevereto)",
+        help="Upload provider: picgo or imgbb (default: picgo)",
+    )
+    parser.add_argument(
+        "--picgo-url",
+        dest="chevereto_url",
+        default=DEFAULT_CHEVERETO_URL,
+        help="PicGo API base URL (default: https://www.picgo.net)",
     )
     parser.add_argument(
         "--chevereto-url",
-        default=DEFAULT_CHEVERETO_URL,
-        help="Chevereto site base URL (default: https://www.picgo.net)",
+        dest="chevereto_url",
+        default=argparse.SUPPRESS,
+        help=argparse.SUPPRESS,
     )
     parser.add_argument(
         "--api-key",
         help=(
             "Selected provider API key; use IMGBB_API_KEY or "
-            "CHEVERETO_API_KEY to keep it out of shell history"
+            "PICGO_API_KEY to keep it out of shell history"
         ),
     )
     parser.add_argument(

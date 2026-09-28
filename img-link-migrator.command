@@ -919,7 +919,7 @@ prompt_settings() {
   print
 
   print -r -- "Choose the upload service:"
-  print -r -- "  Press Return or type 1 for PicGo.net (Chevereto API v1)."
+  print -r -- "  Press Return or type 1 for PicGo.net API v1."
   print -r -- "  Type 2 for ImgBB."
   read -r "service_input?Your choice [1]: "
   service_input="${service_input:l}"

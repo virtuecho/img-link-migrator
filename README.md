@@ -14,8 +14,7 @@ behavior. The documentation for one program does not apply to the other.
 Both programs support these upload destinations:
 
 - [ImgBB API v1](https://api.imgbb.com/1/upload)
-- [PicGo.net API v1.1](https://www.picgo.net/api-v1/?lang=en), based on the
-  [Chevereto API v1](https://v4-docs.chevereto.com/api/1/file-upload.html)
+- [PicGo.net API v1.1](https://www.picgo.net/api-v1/?lang=en)
 
 ## Link detection rules
 
@@ -64,7 +63,7 @@ also recognizes bare HTTP(S) URLs in `.txt` files only.
 
 | `--provider` value | Destination | API key environment variable | API base URL |
 | --- | --- | --- | --- |
-| `chevereto` (default) | PicGo.net or another Chevereto site | `CHEVERETO_API_KEY` | Defaults to `https://www.picgo.net`; the CLI can change it with `--chevereto-url`. |
+| `picgo` (default) | PicGo.net or another API-compatible server | `PICGO_API_KEY` | Defaults to `https://www.picgo.net`; the CLI can change it with `--picgo-url`. |
 | `imgbb` | ImgBB | `IMGBB_API_KEY` | Fixed ImgBB API v1 endpoint. |
 
 Provider caches are isolated. Switching the destination never reuses a URL or
@@ -82,10 +81,9 @@ URL, both programs reuse that URL as a successful result. The content hash is
 then cached so later source URLs containing the same image bytes skip the
 upload request entirely.
 
-The GUI provides a PicGo.net preset. In the Python CLI, selecting `chevereto`
-uses the `X-API-Key` header and uploads the image in the `source` multipart
-field to `/api/1/upload`. A custom Chevereto site selected with
-`--chevereto-url` uses the same standard endpoint on that site.
+The GUI provides a PicGo.net option. The Python CLI uses the `X-API-Key`
+header and uploads the image in the `source` multipart field to
+`/api/1/upload`. Use `--picgo-url` to set a compatible API endpoint.
 
 ### Python features
 
@@ -135,7 +133,7 @@ Then:
 
 1. Use **Add files** to multi-select `.txt`, `.md`, or `.markdown` files and
    **Add folder** to add one or more folders. Remove selected targets as needed.
-2. Keep the default **PicGo.net (Chevereto)** provider or select **ImgBB**.
+2. Keep the default **PicGo.net** provider or select **ImgBB**.
 3. Paste that provider's API key. It is kept in memory for the current run.
 4. Optionally enter one or more source domains, separated by commas.
 5. Choose whether changed files should be backed up.
@@ -161,7 +159,7 @@ CLI commands must be run from the project directory, where
 
 | Provider | CLI selector | Environment variable |
 | --- | --- | --- |
-| PicGo.net / Chevereto | `--provider chevereto` or omit `--provider` | `CHEVERETO_API_KEY` |
+| PicGo.net | `--provider picgo` or omit `--provider` | `PICGO_API_KEY` |
 | ImgBB | `--provider imgbb` | `IMGBB_API_KEY` |
 
 The command used to set a variable depends on the current shell. Run
@@ -182,22 +180,22 @@ A prompt resembling `directory (main)>`, together with an error mentioning
 # ImgBB
 read --silent --global --export --prompt-str 'API key: ' IMGBB_API_KEY
 
-# PicGo.net / Chevereto
-read --silent --global --export --prompt-str 'API key: ' CHEVERETO_API_KEY
+# PicGo.net
+read --silent --global --export --prompt-str 'API key: ' PICGO_API_KEY
 ```
 
 Confirm the selected variable without displaying its value:
 
 ```fish
 set --query IMGBB_API_KEY; and echo 'API key is set'; or echo 'API key is not set'
-set --query CHEVERETO_API_KEY; and echo 'API key is set'; or echo 'API key is not set'
+set --query PICGO_API_KEY; and echo 'API key is set'; or echo 'API key is not set'
 ```
 
 Clear it after use:
 
 ```fish
 set --erase --global IMGBB_API_KEY
-set --erase --global CHEVERETO_API_KEY
+set --erase --global PICGO_API_KEY
 ```
 
 ##### zsh
@@ -207,9 +205,9 @@ set --erase --global CHEVERETO_API_KEY
 read -s "IMGBB_API_KEY?API key: "; echo
 export IMGBB_API_KEY
 
-# PicGo.net / Chevereto
-read -s "CHEVERETO_API_KEY?API key: "; echo
-export CHEVERETO_API_KEY
+# PicGo.net
+read -s "PICGO_API_KEY?API key: "; echo
+export PICGO_API_KEY
 ```
 
 Confirm that it is set:
@@ -217,14 +215,14 @@ Confirm that it is set:
 ```zsh
 # Run only the line for the selected provider.
 [[ -n "${IMGBB_API_KEY:-}" ]] && echo "API key is set" || echo "API key is not set"
-[[ -n "${CHEVERETO_API_KEY:-}" ]] && echo "API key is set" || echo "API key is not set"
+[[ -n "${PICGO_API_KEY:-}" ]] && echo "API key is set" || echo "API key is not set"
 ```
 
 Clear it after use:
 
 ```zsh
 unset IMGBB_API_KEY
-unset CHEVERETO_API_KEY
+unset PICGO_API_KEY
 ```
 
 ##### bash
@@ -234,9 +232,9 @@ unset CHEVERETO_API_KEY
 IFS= read -r -s -p "API key: " IMGBB_API_KEY; echo
 export IMGBB_API_KEY
 
-# PicGo.net / Chevereto
-IFS= read -r -s -p "API key: " CHEVERETO_API_KEY; echo
-export CHEVERETO_API_KEY
+# PicGo.net
+IFS= read -r -s -p "API key: " PICGO_API_KEY; echo
+export PICGO_API_KEY
 ```
 
 Confirm that it is set:
@@ -244,14 +242,14 @@ Confirm that it is set:
 ```bash
 # Run only the line for the selected provider.
 [[ -n "${IMGBB_API_KEY:-}" ]] && echo "API key is set" || echo "API key is not set"
-[[ -n "${CHEVERETO_API_KEY:-}" ]] && echo "API key is set" || echo "API key is not set"
+[[ -n "${PICGO_API_KEY:-}" ]] && echo "API key is set" || echo "API key is not set"
 ```
 
 Clear it after use:
 
 ```bash
 unset IMGBB_API_KEY
-unset CHEVERETO_API_KEY
+unset PICGO_API_KEY
 ```
 
 Migration commands in this terminal session now read the selected provider's
@@ -261,13 +259,13 @@ The key is needed only for `--apply`. Scanning and opening the GUI do not
 require it to be set in advance.
 
 Passing `--api-key` directly also works, but its value may be stored in shell
-history or process listings. This Chevereto example uses PicGo.net:
+history or process listings. Example using PicGo.net:
 
 ```bash
 python3 img_link_migrator.py \
   --apply \
-  --provider chevereto \
-  --api-key "YOUR_CHEVERETO_API_KEY" \
+  --provider picgo \
+  --api-key "YOUR_PICGO_API_KEY" \
   "$HOME/Documents/MyVault"
 ```
 
@@ -310,7 +308,7 @@ Then apply the migration after checking the scan output:
 python3 img_link_migrator.py --apply "$HOME/Documents/MyVault"
 ```
 
-That command uses PicGo.net and reads `CHEVERETO_API_KEY`. To use ImgBB
+That command uses PicGo.net and reads `PICGO_API_KEY`. To use ImgBB
 instead, set `IMGBB_API_KEY` and select ImgBB explicitly:
 
 ```bash
@@ -381,10 +379,10 @@ no value: writing the flag enables its behavior.
 | `--gui` | Flag; enter no value after it. | Use CLI behavior. | `python3 img_link_migrator.py --gui` |
 | `--apply` | Flag; enter no value after it. | Scan only. | `python3 img_link_migrator.py --apply "$HOME/Documents/MyVault"` |
 | `--yes` | Flag; enter no value after it. | `--apply` scans and shows domains, then asks for confirmation. | Confirm without a prompt: `python3 img_link_migrator.py --apply --yes "$HOME/Documents/MyVault"`. |
-| `--provider NAME` | Use `imgbb` or `chevereto`. | `chevereto`, using PicGo.net | `--provider imgbb` selects ImgBB. |
-| `--chevereto-url URL` | Chevereto site base URL. | `https://www.picgo.net` | For another installation: `--provider chevereto --chevereto-url "https://images.example.com"`. |
-| `--api-key KEY` | Replace `KEY` with the selected provider's API key. | Read `IMGBB_API_KEY` or `CHEVERETO_API_KEY`; apply fails if missing. | `--api-key "YOUR_KEY"`; the matching environment variable is safer. |
-| `--expiration SECONDS` | Replace `SECONDS` with a number of seconds. | Default `0`, requesting permanent storage. | `60`–`15552000`; Chevereto receives an equivalent ISO 8601 duration. |
+| `--provider NAME` | Use `imgbb` or `picgo`. | `picgo`, using PicGo.net | `--provider imgbb` selects ImgBB. |
+| `--picgo-url URL` | PicGo API base URL. | `https://www.picgo.net` | For another compatible endpoint: `--provider picgo --picgo-url "https://images.example.com"`. |
+| `--api-key KEY` | Replace `KEY` with the selected provider's API key. | Read `IMGBB_API_KEY` or `PICGO_API_KEY`; apply fails if missing. | `--api-key "YOUR_KEY"`; the matching environment variable is safer. |
+| `--expiration SECONDS` | Replace `SECONDS` with a number of seconds. | Default `0`, requesting permanent storage. | `60`–`15552000`; PicGo.net receives an equivalent ISO 8601 duration. |
 | `--retries N` | Replace `N` with the retry count. | Default `3`, meaning up to three retries after the first failure. | Range `0`–`10`; `--retries 0` makes one attempt. |
 | `--include-host DOMAIN` | Replace `DOMAIN` with an allowed source domain. | Process every detected external image host. | `--include-host xhscdn.com`; repeat or comma-separate values. |
 | `--exclude-host DOMAIN` | Replace `DOMAIN` with an excluded source domain. | Add no extra exclusions; the selected destination remains excluded. | `--exclude-host example.com`; repeat or comma-separate values. |
@@ -485,7 +483,7 @@ python3 img_link_migrator.py \
 
 Expired cache entries are not reused.
 
-ImgBB receives the value as seconds. Chevereto receives the equivalent ISO
+ImgBB receives the value as seconds. PicGo.net receives the equivalent ISO
 8601 duration, such as `PT600S`.
 
 ### Python development
@@ -502,7 +500,7 @@ Run a Python syntax check:
 python3 -m py_compile img_link_migrator.py
 ```
 
-The tests use fake ImgBB and Chevereto responses and do not perform uploads.
+The tests use fake ImgBB and PicGo.net responses and do not perform uploads.
 
 ### Python tool limitations
 
@@ -534,7 +532,7 @@ runtime it neither reads nor launches `img_link_migrator.py`.
   checks files that originally contained that URL.
 - Cache both source URLs and downloaded-image SHA-256 hashes. A known identical
   image reuses its existing destination URL without another upload request.
-- Upload to either ImgBB or PicGo.net using Chevereto API v1.
+- Upload to either ImgBB or PicGo.net.
 - Treat a PicGo.net `Duplicated upload` response containing a valid image URL as
   successful reuse instead of failure.
 - Exclude existing links belonging to the selected destination.
@@ -592,14 +590,14 @@ The upload-service prompt is:
 
 ```text
 Choose the upload service:
-  Press Return or type 1 for PicGo.net (Chevereto API v1).
+  Press Return or type 1 for PicGo.net.
   Type 2 for ImgBB.
 Your choice [1]:
 ```
 
 | Input | Upload destination |
 | --- | --- |
-| Press Return, `1`, `picgo`, `picgo.net`, or `chevereto` | PicGo.net |
+| Press Return, `1`, `picgo`, or `picgo.net` | PicGo.net |
 | `2` or `imgbb` | ImgBB |
 
 For PicGo.net, the tool sends the image as the `source` multipart field to

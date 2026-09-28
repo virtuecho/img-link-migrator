@@ -12,8 +12,7 @@
 文档不适用于另一套程序。两个程序都支持以下上传目标：
 
 - [ImgBB API v1](https://api.imgbb.com/1/upload)
-- 基于 [Chevereto API v1](https://v4-docs.chevereto.com/api/1/file-upload.html)
-  的 [PicGo.net API v1.1](https://www.picgo.net/api-v1/?lang=en)
+- [PicGo.net API v1.1](https://www.picgo.net/api-v1/?lang=en)
 
 ## 链接识别规则
 
@@ -58,7 +57,7 @@ Python 程序主要面向 Obsidian vault 和其他 UTF-8 文本文件。所有�
 
 | `--provider` 取值 | 上传目标 | API key 环境变量 | API 基础 URL |
 | --- | --- | --- | --- |
-| `chevereto`（默认） | PicGo.net 或其他 Chevereto 站点 | `CHEVERETO_API_KEY` | 默认 `https://www.picgo.net`；CLI 可使用 `--chevereto-url` 修改。 |
+| `picgo`（默认） | PicGo.net 或其他兼容 API 的服务 | `PICGO_API_KEY` | 默认 `https://www.picgo.net`；CLI 可使用 `--picgo-url` 修改。 |
 | `imgbb` | ImgBB | `IMGBB_API_KEY` | 固定使用 ImgBB API v1。 |
 
 不同平台使用互相隔离的缓存。切换上传目标时，不会复用其他平台保存的 URL 或图片
@@ -73,10 +72,9 @@ Python 程序主要面向 Obsidian vault 和其他 UTF-8 文本文件。所有�
 该 URL 作为成功结果直接复用。随后保存内容哈希；以后即使来源 URL 不同，只要图片
 字节完全相同，也会跳过上传请求。
 
-GUI 提供固定的 PicGo.net 选项。Python CLI 选择 `chevereto` 时，会使用
-`X-API-Key` 请求头，并把图片放入名为 `source` 的 multipart 字段，发送到
-`/api/1/upload`。通过 `--chevereto-url` 指定其他 Chevereto 站点时，程序会使用该
-站点上的同一标准接口。
+GUI 提供 PicGo.net 选项。Python CLI 会使用 `X-API-Key` 请求头，并把图片放入名为
+`source` 的 multipart 字段，发送到 `/api/1/upload`。可以使用 `--picgo-url` 指定
+兼容的 API 地址。
 
 ### Python 程序功能
 
@@ -121,7 +119,7 @@ python3 img_link_migrator.py --gui
 操作步骤：
 
 1. 点击 `Add files` 可多选文本文件；点击 `Add folder` 可逐个加入文件夹。选中列表项后可移除。
-2. 保留默认的 **PicGo.net (Chevereto)**，或者改选 **ImgBB**。
+2. 保留默认的 **PicGo.net**，或者改选 **ImgBB**。
 3. 粘贴该平台的 API key。它只会保存在本次运行的内存中。
 4. 根据需要填写一个或多个来源域名，多个域名使用英文逗号分隔。
 5. 选择是否在修改文件前创建备份。
@@ -144,7 +142,7 @@ CLI 指在终端中输入命令。下面的命令需要在项目目录中执行�
 
 | 上传平台 | CLI 选择方式 | 环境变量 |
 | --- | --- | --- |
-| PicGo.net / Chevereto | `--provider chevereto`，或者省略 `--provider` | `CHEVERETO_API_KEY` |
+| PicGo.net | `--provider picgo`，或者省略 `--provider` | `PICGO_API_KEY` |
 | ImgBB | `--provider imgbb` | `IMGBB_API_KEY` |
 
 设置变量的命令取决于当前 shell。先运行 `echo $SHELL`，然后只使用下面与当前 shell
@@ -163,22 +161,22 @@ CLI 指在终端中输入命令。下面的命令需要在项目目录中执行�
 # ImgBB
 read --silent --global --export --prompt-str 'API key: ' IMGBB_API_KEY
 
-# PicGo.net / Chevereto
-read --silent --global --export --prompt-str 'API key: ' CHEVERETO_API_KEY
+# PicGo.net
+read --silent --global --export --prompt-str 'API key: ' PICGO_API_KEY
 ```
 
 确认所选变量已经设置，不显示密钥内容：
 
 ```fish
 set --query IMGBB_API_KEY; and echo 'API key 已设置'; or echo 'API key 未设置'
-set --query CHEVERETO_API_KEY; and echo 'API key 已设置'; or echo 'API key 未设置'
+set --query PICGO_API_KEY; and echo 'API key 已设置'; or echo 'API key 未设置'
 ```
 
 使用结束后清除：
 
 ```fish
 set --erase --global IMGBB_API_KEY
-set --erase --global CHEVERETO_API_KEY
+set --erase --global PICGO_API_KEY
 ```
 
 ##### zsh
@@ -188,9 +186,9 @@ set --erase --global CHEVERETO_API_KEY
 read -s "IMGBB_API_KEY?API key: "; echo
 export IMGBB_API_KEY
 
-# PicGo.net / Chevereto
-read -s "CHEVERETO_API_KEY?API key: "; echo
-export CHEVERETO_API_KEY
+# PicGo.net
+read -s "PICGO_API_KEY?API key: "; echo
+export PICGO_API_KEY
 ```
 
 确认已经设置：
@@ -198,14 +196,14 @@ export CHEVERETO_API_KEY
 ```zsh
 # 只执行所选上传平台对应的一行。
 [[ -n "${IMGBB_API_KEY:-}" ]] && echo "API key 已设置" || echo "API key 未设置"
-[[ -n "${CHEVERETO_API_KEY:-}" ]] && echo "API key 已设置" || echo "API key 未设置"
+[[ -n "${PICGO_API_KEY:-}" ]] && echo "API key 已设置" || echo "API key 未设置"
 ```
 
 使用结束后清除：
 
 ```zsh
 unset IMGBB_API_KEY
-unset CHEVERETO_API_KEY
+unset PICGO_API_KEY
 ```
 
 ##### bash
@@ -215,9 +213,9 @@ unset CHEVERETO_API_KEY
 IFS= read -r -s -p "API key: " IMGBB_API_KEY; echo
 export IMGBB_API_KEY
 
-# PicGo.net / Chevereto
-IFS= read -r -s -p "API key: " CHEVERETO_API_KEY; echo
-export CHEVERETO_API_KEY
+# PicGo.net
+IFS= read -r -s -p "API key: " PICGO_API_KEY; echo
+export PICGO_API_KEY
 ```
 
 确认已经设置：
@@ -225,14 +223,14 @@ export CHEVERETO_API_KEY
 ```bash
 # 只执行所选上传平台对应的一行。
 [[ -n "${IMGBB_API_KEY:-}" ]] && echo "API key 已设置" || echo "API key 未设置"
-[[ -n "${CHEVERETO_API_KEY:-}" ]] && echo "API key 已设置" || echo "API key 未设置"
+[[ -n "${PICGO_API_KEY:-}" ]] && echo "API key 已设置" || echo "API key 未设置"
 ```
 
 使用结束后清除：
 
 ```bash
 unset IMGBB_API_KEY
-unset CHEVERETO_API_KEY
+unset PICGO_API_KEY
 ```
 
 设置后，这个终端会话中的迁移命令会自动读取所选平台的 API key。变量只对当前终端
@@ -240,14 +238,14 @@ unset CHEVERETO_API_KEY
 
 API key 只在执行 `--apply` 实际上传时需要。仅扫描和打开 GUI 时不需要提前设置。
 
-也可以直接使用 `--api-key`，但密钥可能进入终端历史或进程列表。下面是以
-PicGo.net 为目标的 Chevereto 示例：
+也可以直接使用 `--api-key`，但密钥可能进入终端历史或进程列表。以下示例使用
+PicGo.net：
 
 ```bash
 python3 img_link_migrator.py \
   --apply \
-  --provider chevereto \
-  --api-key "YOUR_CHEVERETO_API_KEY" \
+  --provider picgo \
+  --api-key "YOUR_PICGO_API_KEY" \
   "$HOME/Documents/MyVault"
 ```
 
@@ -285,7 +283,7 @@ python3 img_link_migrator.py "$HOME/Documents/MyVault"
 迁移期间，交互式 CLI 会在同一行更新进度；GUI 则在每张图片对应的状态行中更新进度。
 
 第二步，确认扫描结果后执行迁移。下面的默认写法使用 PicGo.net，并读取
-`CHEVERETO_API_KEY`：
+`PICGO_API_KEY`：
 
 ```bash
 python3 img_link_migrator.py --apply "$HOME/Documents/MyVault"
@@ -364,10 +362,10 @@ CLI 有三种基本写法：
 | `--gui` | 后面不填值。 | 使用 CLI；有目标时默认只扫描。 | `python3 img_link_migrator.py --gui` |
 | `--apply` | 后面不填值。 | 只扫描，不下载、不上传、不修改文件。 | `python3 img_link_migrator.py --apply "$HOME/Documents/MyVault"` |
 | `--yes` | 后面不填值。 | `--apply` 会在扫描并显示域名后等待确认。 | 无交互地确认迁移：`python3 img_link_migrator.py --apply --yes "$HOME/Documents/MyVault"`。 |
-| `--provider NAME` | `NAME` 填 `imgbb` 或 `chevereto`。 | `chevereto`，使用 PicGo.net | `--provider imgbb` 选择 ImgBB。 |
-| `--chevereto-url URL` | Chevereto 站点基础 URL。 | `https://www.picgo.net` | 其他站点示例：`--provider chevereto --chevereto-url "https://images.example.com"`。 |
-| `--api-key KEY` | 把 `KEY` 换成所选平台的 API key。 | 自动读取 `IMGBB_API_KEY` 或 `CHEVERETO_API_KEY`；缺少时无法迁移。 | `--api-key "YOUR_KEY"`；使用对应环境变量更安全。 |
-| `--expiration SECONDS` | 把 `SECONDS` 换成自动删除前的秒数。 | 默认 `0`，请求永久保存。 | 范围 `60`–`15552000`；Chevereto 会收到等价的 ISO 8601 时间段。 |
+| `--provider NAME` | `NAME` 填 `imgbb` 或 `picgo`。 | `picgo`，使用 PicGo.net | `--provider imgbb` 选择 ImgBB。 |
+| `--picgo-url URL` | PicGo API 基础 URL。 | `https://www.picgo.net` | 其他兼容 API 地址：`--provider picgo --picgo-url "https://images.example.com"`。 |
+| `--api-key KEY` | 把 `KEY` 换成所选平台的 API key。 | 自动读取 `IMGBB_API_KEY` 或 `PICGO_API_KEY`；缺少时无法迁移。 | `--api-key "YOUR_KEY"`；使用对应环境变量更安全。 |
+| `--expiration SECONDS` | 把 `SECONDS` 换成自动删除前的秒数。 | 默认 `0`，请求永久保存。 | 范围 `60`–`15552000`；PicGo.net 会收到等价的 ISO 8601 时间段。 |
 | `--retries N` | 把 `N` 换成失败后的自动重试次数。 | 默认 `3`，即首次失败后最多再重试 3 次。 | 范围 `0`–`10`；`--retries 0` 表示只尝试一次。 |
 | `--include-host DOMAIN` | 把 `DOMAIN` 换成只想处理的来源域名。 | 不限制来源域名，处理所有检测到的外链图片。 | `--include-host xhscdn.com`；可重复使用或用英文逗号分隔。 |
 | `--exclude-host DOMAIN` | 把 `DOMAIN` 换成不想处理的来源域名。 | 不增加额外排除项；所选目标平台仍会排除。 | `--exclude-host example.com`；可重复使用或用英文逗号分隔。 |
@@ -462,7 +460,7 @@ python3 img_link_migrator.py \
 
 已经过期的缓存记录不会被复用。临时图片缓存也不会用于需要永久保存的迁移任务。
 
-ImgBB 直接接收秒数；Chevereto 接收等价的 ISO 8601 时间段，例如 `PT600S`。
+ImgBB 直接接收秒数；PicGo.net 接收等价的 ISO 8601 时间段，例如 `PT600S`。
 
 ### Python 开发与测试
 
@@ -478,7 +476,7 @@ python3 -m unittest discover -s tests -v
 python3 -m py_compile img_link_migrator.py
 ```
 
-测试使用模拟的 ImgBB 和 Chevereto 响应，不会实际上传。
+测试使用模拟的 ImgBB 和 PicGo.net 响应，不会实际上传。
 
 ### Python 程序限制
 
@@ -506,7 +504,7 @@ python3 -m py_compile img_link_migrator.py
 - 初次扫描时建立 URL 到文件的索引；上传完成后只检查原本包含该 URL 的文件。
 - 同时缓存来源 URL 和下载图片的 SHA-256；已知的相同图片会直接复用目标 URL，
   不再发起上传请求。
-- 可以上传到 ImgBB，或者使用 Chevereto API v1 上传到 PicGo.net。
+- 可以上传到 ImgBB 或 PicGo.net。
 - PicGo.net 的 `Duplicated upload` 响应只要包含有效图片 URL，就按成功复用处理。
 - 排除属于当前所选目标平台的现有链接。
 - 下载每个选中的 URL；拒绝空响应或超过 32 MB 的内容，不根据下载内容特征验证图片类型。
@@ -552,14 +550,14 @@ python3 -m py_compile img_link_migrator.py
 
 ```text
 Choose the upload service:
-  Press Return or type 1 for PicGo.net (Chevereto API v1).
+  Press Return or type 1 for PicGo.net.
   Type 2 for ImgBB.
 Your choice [1]:
 ```
 
 | 输入 | 上传目标 |
 | --- | --- |
-| 直接按回车、`1`、`picgo`、`picgo.net` 或 `chevereto` | PicGo.net |
+| 直接按回车、`1`、`picgo` 或 `picgo.net` | PicGo.net |
 | `2` 或 `imgbb` | ImgBB |
 
 选择 PicGo.net 时，程序使用 `X-API-Key` 请求头，把图片作为 `source` multipart
