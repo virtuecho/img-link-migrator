@@ -1476,7 +1476,7 @@ def _run_cli(args: argparse.Namespace) -> int:
             parts = choice.split()
             action = "view"
             number = choice
-            if len(parts) == 2 and parts[0].lower() in {"x", "s", "i"}:
+            if len(parts) == 2 and parts[0].lower() in {"x", "i"}:
                 action, number = parts[0].lower(), parts[1]
             if not number.isdigit() or not 1 <= int(number) <= len(domains):
                 print(
@@ -1508,7 +1508,7 @@ def _run_cli(args: argparse.Namespace) -> int:
                         break
                     print("Enter 'b' to return, 'x' to skip this domain, or press Return.")
                 print_domain_choices()
-            elif action in {"x", "s"}:
+            elif action == "x":
                 skipped_domains.add(host)
                 print("{} will be skipped during migration.".format(host))
                 print_domain_choices()
@@ -1961,23 +1961,25 @@ class MigratorGUI:
 
     def _skip_domain(self) -> None:
         host = self._domain_for_choice()
-        if host is None:
-            return
-        self.skipped_domains.add(host)
-        self._update_domain_list()
-        self.summary_var.set("{} will be skipped during migration.".format(host))
+        if host is not None:
+            self._set_domain_skipped(host, True)
 
     def _include_domain(self) -> None:
         host = self._domain_for_choice()
-        if host is None:
-            return
-        self.skipped_domains.discard(host)
+        if host is not None:
+            self._set_domain_skipped(host, False)
+
+    def _set_domain_skipped(self, host: str, skipped: bool) -> None:
+        if skipped:
+            self.skipped_domains.add(host)
+            state = "skipped"
+        else:
+            self.skipped_domains.discard(host)
+            state = "included"
         self._update_domain_list()
-        self.summary_var.set("{} will be included in migration.".format(host))
+        self.summary_var.set("{} will be {} during migration.".format(host, state))
 
     def _update_domain_list(self) -> None:
-        if not hasattr(self, "domain_text"):
-            return
         self.domain_text.configure(state="normal")
         self.domain_text.delete("1.0", "end")
         for index, host in enumerate(self.last_domains, 1):
@@ -2018,14 +2020,7 @@ class MigratorGUI:
         actions.grid(row=2, column=0, columnspan=2, sticky="e", padx=6, pady=6)
 
         def set_domain_skipped(skipped: bool) -> None:
-            if skipped:
-                self.skipped_domains.add(host)
-                state = "skipped"
-            else:
-                self.skipped_domains.discard(host)
-                state = "included"
-            self._update_domain_list()
-            self.summary_var.set("{} will be {} during migration.".format(host, state))
+            self._set_domain_skipped(host, skipped)
             window.destroy()
 
         self.ttk.Button(

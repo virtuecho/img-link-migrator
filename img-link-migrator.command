@@ -1007,7 +1007,7 @@ show_scan_summary() {
       [[ -z "$domain_choice" ]] && break
       action="view"
       domain_number="$domain_choice"
-      if [[ "$domain_choice" =~ '^[xsi] +([0-9]+)$' ]]; then
+      if [[ "$domain_choice" =~ '^[xi] +([0-9]+)$' ]]; then
         action="${domain_choice[1]:l}"
         domain_number="${match[1]}"
       fi
@@ -1039,7 +1039,7 @@ show_scan_summary() {
             print -r -- "Enter 'b' to return, 'x' to skip this domain, or press Return."
           done
           ;;
-        x|s)
+        x)
           skipped_domains[$selected_host]=true
           print -r -- "${selected_host} will be skipped during migration."
           ;;
