@@ -1441,38 +1441,96 @@ def _run_cli(args: argparse.Namespace) -> int:
         host = urllib.parse.urlsplit(url).hostname or "unknown"
         domain_urls.setdefault(host.lower(), []).append(url)
     domains = sorted(domain_urls)
+    skipped_domains: Set[str] = set()
+
+    def print_domain_choices() -> None:
+        print("Image source domains:")
+        for index, host in enumerate(domains, 1):
+            state = " [skipped]" if host in skipped_domains else ""
+            print(
+                "  {}. {} ({} unique URL(s)){}".format(
+                    index, host, len(domain_urls[host]), state
+                )
+            )
 
     print(
         "Scanned {} file(s), found {} image reference(s) / {} unique URL(s).".format(
             len(plans), len(refs), len(urls)
         )
     )
-    print("Image source domains:")
-    for index, host in enumerate(domains, 1):
-        print("  {}. {} ({} unique URL(s))".format(
-            index, host, len(domain_urls[host])
-        ))
+    print_domain_choices()
 
     if domains and sys.stdin.isatty() and not (args.apply and args.yes):
         while True:
             try:
                 choice = input(
-                    "Enter a domain number to list its image URLs, or press "
-                    "Return to continue: "
+                    "Enter N to inspect, 'x N' (e.g. x 2) to skip, "
+                    "'i N' to include, "
+                    "or Return to continue: "
                 ).strip()
             except EOFError:
                 break
             if not choice:
                 break
-            if not choice.isdigit() or not 1 <= int(choice) <= len(domains):
-                print("Enter a number from 1 to {} or press Return.".format(len(domains)))
-                continue
-            host = domains[int(choice) - 1]
-            print("Image URL candidates for {}:".format(host))
-            for url in domain_urls[host]:
-                print("  {}".format(url))
 
-    if args.apply and urls and not args.yes:
+            parts = choice.split()
+            action = "view"
+            number = choice
+            if len(parts) == 2 and parts[0].lower() in {"x", "s", "i"}:
+                action, number = parts[0].lower(), parts[1]
+            if not number.isdigit() or not 1 <= int(number) <= len(domains):
+                print(
+                    "Use N, 'x N', or 'i N' with a domain number from 1 to {}; "
+                    "press Return to continue.".format(len(domains))
+                )
+                continue
+            host = domains[int(number) - 1]
+            if action == "view":
+                print("Image URL candidates for {}:".format(host))
+                for url in domain_urls[host]:
+                    print("  {}".format(url))
+                while True:
+                    try:
+                        detail_prompt = (
+                            "Press Return or 'b' to return to domains, or "
+                            "'x' to skip {}: ".format(host)
+                        )
+                        detail_choice = input(
+                            detail_prompt
+                        ).strip().lower()
+                    except EOFError:
+                        detail_choice = "b"
+                    if detail_choice in {"", "b"}:
+                        break
+                    if detail_choice == "x":
+                        skipped_domains.add(host)
+                        print("{} will be skipped during migration.".format(host))
+                        break
+                    print("Enter 'b' to return, 'x' to skip this domain, or press Return.")
+                print_domain_choices()
+            elif action in {"x", "s"}:
+                skipped_domains.add(host)
+                print("{} will be skipped during migration.".format(host))
+                print_domain_choices()
+            else:
+                skipped_domains.discard(host)
+                print("{} will be included in migration.".format(host))
+                print_domain_choices()
+
+    selected_urls = {
+        url
+        for url in urls
+        if (urllib.parse.urlsplit(url).hostname or "unknown").lower()
+        not in skipped_domains
+    }
+    if skipped_domains:
+        print(
+            "Skipping {} domain(s), {} unique URL(s).".format(
+                len(skipped_domains), len(urls) - len(selected_urls)
+            )
+        )
+
+    if args.apply and selected_urls and not args.yes:
         if not sys.stdin.isatty():
             raise MigrationError(
                 "Migration needs confirmation. Run interactively or pass --yes."
@@ -1487,7 +1545,7 @@ def _run_cli(args: argparse.Namespace) -> int:
 
     cancel_event = threading.Event()
     client = None
-    if args.apply and urls:
+    if args.apply and selected_urls:
         env_name = _provider_environment_variable(args.provider)
         client = _create_upload_client(
             args.provider,
@@ -1510,7 +1568,12 @@ def _run_cli(args: argparse.Namespace) -> int:
         cache_namespace=cache_namespace,
     )
     try:
-        report = engine.run(targets, apply=args.apply, plans=plans)
+        report = engine.run(
+            targets,
+            apply=args.apply,
+            only_urls=selected_urls,
+            plans=plans,
+        )
     except KeyboardInterrupt:
         cancel_event.set()
         cli_progress.finish()
@@ -1592,6 +1655,7 @@ class MigratorGUI:
         self.last_failed: Set[str] = set()
         self.last_domains: Tuple[str, ...] = ()
         self.last_domain_urls: Dict[str, List[str]] = {}
+        self.skipped_domains: Set[str] = set()
         self.last_scan_urls: Set[str] = set()
         self.last_scan_target: Optional[pathlib.Path] = None
         self.has_scan = False
@@ -1716,6 +1780,12 @@ class MigratorGUI:
             text="Show candidate URLs",
             command=self._show_domain_urls,
         ).pack(side="left")
+        ttk.Button(
+            inspect_frame, text="Skip domain", command=self._skip_domain
+        ).pack(side="left", padx=(8, 0))
+        ttk.Button(
+            inspect_frame, text="Include domain", command=self._include_domain
+        ).pack(side="left", padx=6)
 
         ttk.Progressbar(
             outer, variable=self.progress_var, maximum=100, mode="determinate"
@@ -1807,11 +1877,10 @@ class MigratorGUI:
         self.has_scan = False
         self.last_domains = ()
         self.last_domain_urls = {}
+        self.skipped_domains = set()
         self.last_scan_urls = set()
         self.domain_choice_var.set("")
-        self.domain_text.configure(state="normal")
-        self.domain_text.delete("1.0", "end")
-        self.domain_text.configure(state="disabled")
+        self._update_domain_list()
         self.last_scan_target = pathlib.Path(
             self.target_var.get().strip()
         ).expanduser().resolve()
@@ -1832,48 +1901,103 @@ class MigratorGUI:
         if not self.last_domains:
             self.messagebox.showinfo(APP_NAME, "The last scan found no image links.")
             return
-        domains = "\n".join(
+        included_domains = "\n".join(
             "  {}. {} ({} unique URL(s))".format(
                 index,
                 host,
                 len(self.last_domain_urls.get(host, [])),
             )
             for index, host in enumerate(self.last_domains, 1)
+            if host not in self.skipped_domains
         )
+        selected_urls = {
+            url
+            for url in self.last_scan_urls
+            if (urllib.parse.urlsplit(url).hostname or "").lower()
+            not in self.skipped_domains
+        }
+        if not selected_urls:
+            self.messagebox.showinfo(
+                APP_NAME, "All scanned domains are skipped. Include a domain to migrate links."
+            )
+            return
+        skipped_text = "\nSkipped domains: {}".format(
+            ", ".join(sorted(self.skipped_domains))
+        ) if self.skipped_domains else ""
         if not self.messagebox.askyesno(
             "Confirm migration",
-            "Detected image source domains:\n{}\n\n"
+            "Domains to migrate:\n{}{}\n\n"
             "Successful uploads will modify the selected text files. "
             "{} Continue?".format(
-                domains,
+                included_domains,
+                skipped_text,
                 "Original files will be backed up first."
                 if self.backup_var.get()
                 else "Backups are disabled for this run."
             ),
         ):
             return
-        self._start(True, set(self.last_scan_urls))
+        self._start(True, selected_urls)
 
-    def _show_domain_urls(self) -> None:
+    def _domain_for_choice(self) -> Optional[str]:
         if not self.has_scan:
-            self.messagebox.showinfo(APP_NAME, "Scan files before inspecting a domain.")
-            return
+            self.messagebox.showinfo(APP_NAME, "Scan files before selecting a domain.")
+            return None
         if not self.last_domains:
             self.messagebox.showinfo(APP_NAME, "The scan found no image source domains.")
-            return
+            return None
         try:
             index = int(self.domain_choice_var.get().strip())
         except ValueError:
             self.messagebox.showinfo(APP_NAME, "Enter a domain number from the list.")
-            return
+            return None
         if not 1 <= index <= len(self.last_domains):
             self.messagebox.showinfo(
                 APP_NAME,
                 "Enter a number from 1 to {}.".format(len(self.last_domains)),
             )
+            return None
+        return self.last_domains[index - 1]
+
+    def _skip_domain(self) -> None:
+        host = self._domain_for_choice()
+        if host is None:
+            return
+        self.skipped_domains.add(host)
+        self._update_domain_list()
+        self.summary_var.set("{} will be skipped during migration.".format(host))
+
+    def _include_domain(self) -> None:
+        host = self._domain_for_choice()
+        if host is None:
+            return
+        self.skipped_domains.discard(host)
+        self._update_domain_list()
+        self.summary_var.set("{} will be included in migration.".format(host))
+
+    def _update_domain_list(self) -> None:
+        if not hasattr(self, "domain_text"):
+            return
+        self.domain_text.configure(state="normal")
+        self.domain_text.delete("1.0", "end")
+        for index, host in enumerate(self.last_domains, 1):
+            state = " [SKIPPED]" if host in self.skipped_domains else ""
+            self.domain_text.insert(
+                "end",
+                "{}. {} ({} unique URL(s)){}\n".format(
+                    index,
+                    host,
+                    len(self.last_domain_urls.get(host, [])),
+                    state,
+                ),
+            )
+        self.domain_text.configure(state="disabled")
+
+    def _show_domain_urls(self) -> None:
+        host = self._domain_for_choice()
+        if host is None:
             return
 
-        host = self.last_domains[index - 1]
         urls = self.last_domain_urls.get(host, [])
         window = self.tk.Toplevel(self.root)
         window.title("Image URLs from {}".format(host))
@@ -1890,6 +2014,33 @@ class MigratorGUI:
             window, orient="horizontal", command=text.xview
         )
         x_scrollbar.grid(row=1, column=0, sticky="ew")
+        actions = self.ttk.Frame(window)
+        actions.grid(row=2, column=0, columnspan=2, sticky="e", padx=6, pady=6)
+
+        def set_domain_skipped(skipped: bool) -> None:
+            if skipped:
+                self.skipped_domains.add(host)
+                state = "skipped"
+            else:
+                self.skipped_domains.discard(host)
+                state = "included"
+            self._update_domain_list()
+            self.summary_var.set("{} will be {} during migration.".format(host, state))
+            window.destroy()
+
+        self.ttk.Button(
+            actions, text="Return to domains", command=window.destroy
+        ).pack(side="left", padx=4)
+        self.ttk.Button(
+            actions,
+            text="Skip this domain",
+            command=lambda: set_domain_skipped(True),
+        ).pack(side="left", padx=4)
+        self.ttk.Button(
+            actions,
+            text="Include this domain",
+            command=lambda: set_domain_skipped(False),
+        ).pack(side="left", padx=4)
         text.configure(
             yscrollcommand=y_scrollbar.set,
             xscrollcommand=x_scrollbar.set,
@@ -2005,21 +2156,13 @@ class MigratorGUI:
             self.last_domain_urls = {
                 host: sorted(domain_urls[host]) for host in self.last_domains
             }
+            self.skipped_domains.clear()
             self.last_scan_urls = urls
             self.has_scan = True
-            self.domain_text.configure(state="normal")
-            self.domain_text.delete("1.0", "end")
-            for index, host in enumerate(self.last_domains, 1):
-                self.domain_text.insert(
-                    "end",
-                    "{}. {} ({} unique URL(s))\n".format(
-                        index, host, len(self.last_domain_urls[host])
-                    ),
-                )
-            self.domain_text.configure(state="disabled")
+            self._update_domain_list()
             self.summary_var.set(
                 "Found {} unique image URL(s) across {} reference(s) in {} domain(s). "
-                "Enter a domain number to inspect its URLs.".format(
+                "Enter a domain number to inspect URLs, or use Skip/Include domain.".format(
                     event.get("urls", 0),
                     event.get("references", 0),
                     len(self.last_domains),

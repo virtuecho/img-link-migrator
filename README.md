@@ -101,9 +101,10 @@ Then:
 4. Optionally enter one or more source domains, separated by commas.
 5. Choose whether changed files should be backed up.
 6. Click **Scan** to preview the detected links.
-7. Review the numbered source-domain list. To inspect links for one domain,
-   enter its number and click **Show candidate URLs**. Click **Start migration**
-   and confirm before uploads begin.
+7. Review the numbered source-domain list. Enter a number and click **Show
+   candidate URLs** to inspect it. The link window has **Return to domains**,
+   **Skip this domain**, and **Include this domain** actions; the main window also
+   has skip/include controls. Click **Start migration** and confirm.
 8. If any item fails, click **Retry failed**.
 
 The domain field can be left empty to migrate images from every external host.
@@ -254,8 +255,10 @@ python3 img_link_migrator.py "$HOME/Documents/MyVault"
 ```
 
 The scan prints numbered source domains and URL counts instead of dumping every
-candidate link. In an interactive terminal, enter a domain number to inspect
-that domain's URLs; press Return to continue.
+candidate link. In an interactive terminal, enter `N` to inspect all links for
+domain N. After inspection, press Return or enter `b` to return to the domain
+list, or enter `x` to skip that domain. At the domain list, `x N` skips a domain
+and `i N` includes it again; press Return to continue.
 
 During migration, the interactive CLI updates one progress line in place. The
 GUI keeps progress in its per-image status table.
@@ -523,8 +526,11 @@ The program asks only for the following information:
 2. Enter that service's API key. Typing is hidden for the current run.
 3. Drag one supported file or directory into Terminal and press Return.
 4. Choose the source domains.
-5. Review the numbered source domains. Enter a domain number to list its image
-   URLs; press Return when done, then enter `y` to start migration.
+5. Review the numbered source domains. Enter `N` to list all its image URLs.
+   After inspection, press Return or enter `b` to return to the domain list, or
+   enter `x` to skip that domain. At the domain list, `x N` skips a domain and
+   `i N` includes it again. Press Return when done, then enter `y` to start
+   migration.
 
 The upload-service prompt is:
 
@@ -567,9 +573,11 @@ requests per minute; retries use the same schedule. A rate-limit response
 pauses all upload workers for 60 seconds and then retry continues automatically.
 
 There is no backup step. After scanning, the tool lists numbered source domains
-and URL counts. Enter a domain number to list its candidate image URLs; press
-Return when done, then enter `y` or `yes` to proceed. The completion summary
-lists every failed URL.
+and URL counts. Enter `N` to list all of domain N's candidate URLs. After
+inspection, press Return or enter `b` to return to the domain list, or enter
+`x` to skip that domain. At the domain list, `x N` skips a domain and `i N`
+includes it again. Press Return when done, then enter `y` or `yes` to proceed.
+The completion summary lists every failed URL.
 
 In an interactive terminal, migration progress stays on one line with completed,
 uploaded, reused, failed, and active-transfer counts. Failure details remain

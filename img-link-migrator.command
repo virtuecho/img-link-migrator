@@ -960,14 +960,21 @@ show_scan_summary() {
   local host
   local start_input
   local domain_choice
+  local detail_choice
   local selected_host
+  local action
+  local domain_number
+  local skipped_url_count=0
   local index
   local -a sorted_domains
+  local -a scanned_urls
   local -A domain_counts
+  local -A skipped_domains
 
   source_description="${(j:, :)source_hosts}"
   [[ "$all_hosts" == true ]] && source_description="every domain"
   domain_counts=()
+  skipped_domains=()
   for url in "${urls[@]}"; do
     if [[ "$url" =~ '^https?://([^/:?#]+)' ]]; then
       host="${match[1]:l}"
@@ -996,28 +1003,84 @@ show_scan_summary() {
 
   if (( ${#sorted_domains} > 0 )); then
     while true; do
-      read -r "domain_choice?Enter a domain number to list its image URLs, or Return to continue: "
+      read -r "domain_choice?Enter N to inspect, 'x N' (e.g. x 2) to skip, 'i N' to include, or Return to continue: " || break
       [[ -z "$domain_choice" ]] && break
-      if [[ ! "$domain_choice" =~ '^[0-9]+$' ]] || \
-        (( domain_choice < 1 || domain_choice > ${#sorted_domains} )); then
-        print -r -- "Enter a number from 1 to ${#sorted_domains}, or press Return."
+      action="view"
+      domain_number="$domain_choice"
+      if [[ "$domain_choice" =~ '^[xsi] +([0-9]+)$' ]]; then
+        action="${domain_choice[1]:l}"
+        domain_number="${match[1]}"
+      fi
+      if [[ ! "$domain_number" =~ '^[0-9]+$' ]] || \
+        (( domain_number < 1 || domain_number > ${#sorted_domains} )); then
+        print -r -- "Use N, 'x N', or 'i N' with a number from 1 to ${#sorted_domains}, or press Return."
         continue
       fi
-      selected_host="${sorted_domains[$domain_choice]}"
-      print
-      print -r -- "Image URL candidates for ${selected_host}:"
-      for url in "${urls[@]}"; do
-        if [[ "$url" =~ '^https?://([^/:?#]+)' ]] && \
-          [[ "${match[1]:l}" == "$selected_host" ]]; then
-          print -r -- "  ${url}"
+      selected_host="${sorted_domains[$domain_number]}"
+      case "$action" in
+        view)
+          print
+          print -r -- "Image URL candidates for ${selected_host}:"
+          for url in "${urls[@]}"; do
+            if [[ "$url" =~ '^https?://([^/:?#]+)' ]] && \
+              [[ "${match[1]:l}" == "$selected_host" ]]; then
+              print -r -- "  ${url}"
+            fi
+          done
+          while true; do
+            read -r "detail_choice?Press Return or 'b' to return to domains, or 'x' to skip ${selected_host}: " || detail_choice="b"
+            detail_choice="${detail_choice:l}"
+            [[ -z "$detail_choice" || "$detail_choice" == "b" ]] && break
+            if [[ "$detail_choice" == "x" ]]; then
+              skipped_domains[$selected_host]=true
+              print -r -- "${selected_host} will be skipped during migration."
+              break
+            fi
+            print -r -- "Enter 'b' to return, 'x' to skip this domain, or press Return."
+          done
+          ;;
+        x|s)
+          skipped_domains[$selected_host]=true
+          print -r -- "${selected_host} will be skipped during migration."
+          ;;
+        i)
+          unset "skipped_domains[$selected_host]"
+          print -r -- "${selected_host} will be included in migration."
+          ;;
+      esac
+      print -r -- "Image source domains:"
+      for (( index = 1; index <= ${#sorted_domains}; index++ )); do
+        host="${sorted_domains[$index]}"
+        if [[ "${skipped_domains[$host]-}" == true ]]; then
+          print -r -- "  ${index}. ${host} (${domain_counts[$host]} unique URL(s)) [skipped]"
+        else
+          print -r -- "  ${index}. ${host} (${domain_counts[$host]} unique URL(s))"
         fi
       done
     done
   fi
+
+  scanned_urls=("${urls[@]}")
+  urls=()
+  for url in "${scanned_urls[@]}"; do
+    if [[ "$url" =~ '^https?://([^/:?#]+)' ]]; then
+      host="${match[1]:l}"
+      if [[ "${skipped_domains[$host]-}" == true ]]; then
+        (( skipped_url_count += 1 ))
+        continue
+      fi
+    fi
+    urls+=("$url")
+  done
+  print -r -- "Selected image URLs: ${#urls} (skipped ${skipped_url_count})."
   print
 
   if (( ${#urls} == 0 )); then
-    print -r -- "No matching URLs were found. Nothing was changed."
+    if (( skipped_url_count > 0 )); then
+      print -r -- "All matching URLs were skipped. Nothing was changed."
+    else
+      print -r -- "No matching URLs were found. Nothing was changed."
+    fi
     return 1
   fi
 
