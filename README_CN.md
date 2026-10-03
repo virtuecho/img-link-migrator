@@ -57,8 +57,8 @@ Python 程序主要面向 Obsidian vault 和其他 UTF-8 文本文件。所有�
 
 | `--provider` 取值 | 上传目标 | API key 环境变量 | API 基础 URL |
 | --- | --- | --- | --- |
-| `picgo`（默认） | PicGo.net 或其他兼容 API 的服务 | `PICGO_API_KEY` | 默认 `https://www.picgo.net`；CLI 可使用 `--picgo-url` 修改。 |
-| `imgbb` | ImgBB | `IMGBB_API_KEY` | 固定使用 ImgBB API v1。 |
+| `picgo` | PicGo.net 或其他兼容 API 的服务 | `PICGO_API_KEY` | 默认 `https://www.picgo.net`；CLI 可使用 `--picgo-url` 修改。 |
+| `imgbb`（默认） | ImgBB | `IMGBB_API_KEY` | 固定使用 ImgBB API v1。 |
 
 不同平台使用互相隔离的缓存。切换上传目标时，不会复用其他平台保存的 URL 或图片
 内容哈希缓存。
@@ -119,7 +119,7 @@ python3 img_link_migrator.py --gui
 操作步骤：
 
 1. 点击 `Add files` 可多选文本文件；点击 `Add folder` 可逐个加入文件夹。选中列表项后可移除。
-2. 保留默认的 **PicGo.net**，或者改选 **ImgBB**。
+2. 保留默认的 **ImgBB**，或者改选 **PicGo.net**。
 3. 粘贴该平台的 API key。它只会保存在本次运行的内存中。
 4. 根据需要填写一个或多个来源域名，多个域名使用英文逗号分隔。
 5. 选择是否在修改文件前创建备份。
@@ -137,13 +137,19 @@ CLI 指在终端中输入命令。下面的命令需要在项目目录中执行�
 
 #### API key 填在哪里
 
+在 `img_link_migrator.py` 中分别填写 `HARDCODED_IMGBB_API_KEY` 和
+`HARDCODED_PICGO_API_KEY`，即可为 Python CLI 和 GUI 设置两个平台各自的默认密钥。
+GUI 切换平台时自动载入对应密钥；手动修改输入框或 CLI 的 `--api-key` 可以覆盖默认值。
+留空时先读取对应环境变量，再提示手动输入。独立脚本 `img-link-migrator.command`
+也有同名的两个配置项，需单独填写；所选平台的配置为空时仍提示输入密钥。
+
 - **GUI**：先选择上传平台，再把对应密钥粘贴到 API key 输入框。
 - **CLI**：使用与 `--provider` 对应的环境变量。
 
 | 上传平台 | CLI 选择方式 | 环境变量 |
 | --- | --- | --- |
-| PicGo.net | `--provider picgo`，或者省略 `--provider` | `PICGO_API_KEY` |
-| ImgBB | `--provider imgbb` | `IMGBB_API_KEY` |
+| PicGo.net | `--provider picgo` | `PICGO_API_KEY` |
+| ImgBB | `--provider imgbb`，或者省略 `--provider` | `IMGBB_API_KEY` |
 
 设置变量的命令取决于当前 shell。先运行 `echo $SHELL`，然后只使用下面与当前 shell
 匹配的一组命令，并且只执行所选上传平台对应的输入行。
@@ -282,19 +288,19 @@ python3 img_link_migrator.py "$HOME/Documents/MyVault"
 
 迁移期间，交互式 CLI 会在同一行更新进度；GUI 则在每张图片对应的状态行中更新进度。
 
-第二步，确认扫描结果后执行迁移。下面的默认写法使用 PicGo.net，并读取
-`PICGO_API_KEY`：
+第二步，确认扫描结果后执行迁移。下面的默认写法使用 ImgBB，未填写硬编码密钥时读取
+`IMGBB_API_KEY`：
 
 ```bash
 python3 img_link_migrator.py --apply "$HOME/Documents/MyVault"
 ```
 
-如果改为上传到 ImgBB，请设置 `IMGBB_API_KEY` 并显式选择 ImgBB：
+如果改为上传到 PicGo.net，请设置 `PICGO_API_KEY` 并显式选择 PicGo.net：
 
 ```bash
 python3 img_link_migrator.py \
   --apply \
-  --provider imgbb \
+  --provider picgo \
   "$HOME/Documents/MyVault"
 ```
 
@@ -362,9 +368,9 @@ CLI 有三种基本写法：
 | `--gui` | 后面不填值。 | 使用 CLI；有目标时默认只扫描。 | `python3 img_link_migrator.py --gui` |
 | `--apply` | 后面不填值。 | 只扫描，不下载、不上传、不修改文件。 | `python3 img_link_migrator.py --apply "$HOME/Documents/MyVault"` |
 | `--yes` | 后面不填值。 | `--apply` 会在扫描并显示域名后等待确认。 | 无交互地确认迁移：`python3 img_link_migrator.py --apply --yes "$HOME/Documents/MyVault"`。 |
-| `--provider NAME` | `NAME` 填 `imgbb` 或 `picgo`。 | `picgo`，使用 PicGo.net | `--provider imgbb` 选择 ImgBB。 |
+| `--provider NAME` | `NAME` 填 `imgbb` 或 `picgo`。 | `imgbb`，使用 ImgBB | `--provider picgo` 选择 PicGo.net。 |
 | `--picgo-url URL` | PicGo API 基础 URL。 | `https://www.picgo.net` | 其他兼容 API 地址：`--provider picgo --picgo-url "https://images.example.com"`。 |
-| `--api-key KEY` | 把 `KEY` 换成所选平台的 API key。 | 自动读取 `IMGBB_API_KEY` 或 `PICGO_API_KEY`；缺少时无法迁移。 | `--api-key "YOUR_KEY"`；使用对应环境变量更安全。 |
+| `--api-key KEY` | 把 `KEY` 换成所选平台的 API key。 | 先使用对应平台的硬编码密钥，再读取 `IMGBB_API_KEY` 或 `PICGO_API_KEY`；缺少时提示输入。 | `--api-key "YOUR_KEY"`；使用对应环境变量更安全。 |
 | `--expiration SECONDS` | 把 `SECONDS` 换成自动删除前的秒数。 | 默认 `0`，请求永久保存。 | 范围 `60`–`15552000`；PicGo.net 会收到等价的 ISO 8601 时间段。 |
 | `--retries N` | 把 `N` 换成失败后的自动重试次数。 | 默认 `3`，即首次失败后最多再重试 3 次。 | 范围 `0`–`10`；`--retries 0` 表示只尝试一次。 |
 | `--include-host DOMAIN` | 把 `DOMAIN` 换成只想处理的来源域名。 | 不限制来源域名，处理所有检测到的外链图片。 | `--include-host xhscdn.com`；可重复使用或用英文逗号分隔。 |
@@ -540,7 +546,7 @@ python3 -m py_compile img_link_migrator.py
 
 程序只会要求填写以下内容：
 
-1. 保留默认的 PicGo.net，或者改选 ImgBB。
+1. 保留默认的 ImgBB，或者改选 PicGo.net。
 2. 输入所选平台的 API key。本次运行中的输入内容会被隐藏。
 3. 每次把一个支持的文件或文件夹拖入终端并按回车；重复添加其他目标，最后在空提示处按回车结束。
 4. 选择来源域名。
@@ -550,15 +556,15 @@ python3 -m py_compile img_link_migrator.py
 
 ```text
 Choose the upload service:
-  Press Return or type 1 for PicGo.net.
-  Type 2 for ImgBB.
+  Press Return or type 1 for ImgBB.
+  Type 2 for PicGo.net API v1.
 Your choice [1]:
 ```
 
 | 输入 | 上传目标 |
 | --- | --- |
-| 直接按回车、`1`、`picgo` 或 `picgo.net` | PicGo.net |
-| `2` 或 `imgbb` | ImgBB |
+| 直接按回车、`1` 或 `imgbb` | ImgBB |
+| `2`、`picgo` 或 `picgo.net` | PicGo.net |
 
 选择 PicGo.net 时，程序使用 `X-API-Key` 请求头，把图片作为 `source` multipart
 字段发送到 `/api/1/upload`。

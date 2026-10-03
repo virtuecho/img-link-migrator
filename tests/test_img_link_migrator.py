@@ -92,14 +92,36 @@ class SourcePolicyTests(unittest.TestCase):
         )
         self.assertIn('readonly APP_VERSION="{}"'.format(project_version), command_text)
 
-    def test_picgo_is_the_default_provider_without_changing_legacy_cache_keys(self):
+    def test_imgbb_is_the_default_provider_without_changing_legacy_cache_keys(self):
         args = migrator._build_parser().parse_args(["note.md"])
-        self.assertEqual(args.provider, "chevereto")
+        self.assertEqual(args.provider, "imgbb")
         self.assertEqual(migrator.ImgBBClient.cache_namespace, "imgbb")
         self.assertEqual(
             migrator.StateStore._cache_key("source", "imgbb"),
             "source",
         )
+
+    def test_default_keys_follow_the_selected_provider_in_cli_and_gui(self):
+        with mock.patch.object(migrator, "HARDCODED_IMGBB_API_KEY", "imgbb-key"), \
+                mock.patch.object(migrator, "HARDCODED_PICGO_API_KEY", "picgo-key"), \
+                mock.patch.dict(migrator.os.environ, {
+                    "IMGBB_API_KEY": "imgbb-env", "PICGO_API_KEY": "picgo-env"
+                }, clear=True):
+            self.assertEqual(migrator._provider_default_api_key("imgbb"), "imgbb-key")
+            self.assertEqual(migrator._provider_default_api_key("chevereto"), "picgo-key")
+            gui = migrator.MigratorGUI.__new__(migrator.MigratorGUI)
+            gui.provider_var = mock.Mock()
+            gui.key_var = mock.Mock()
+            gui.key_label = mock.Mock()
+            for label, key in (("ImgBB", "imgbb-key"), ("PicGo.net", "picgo-key")):
+                gui.provider_var.get.return_value = label
+                gui._provider_changed()
+                gui.key_var.set.assert_called_with(key)
+            with mock.patch.object(migrator, "HARDCODED_IMGBB_API_KEY", ""):
+                self.assertEqual(migrator._provider_default_api_key("imgbb"), "imgbb-env")
+                self.assertEqual(migrator._provider_default_api_key("chevereto"), "picgo-key")
+            with mock.patch.object(migrator, "HARDCODED_PICGO_API_KEY", ""):
+                self.assertEqual(migrator._provider_default_api_key("chevereto"), "picgo-env")
 
     def test_upload_rate_limit_is_shared_by_both_provider_clients(self):
         self.assertEqual(migrator.UPLOADS_PER_MINUTE, 50)

@@ -63,8 +63,8 @@ also recognizes bare HTTP(S) URLs in `.txt` files only.
 
 | `--provider` value | Destination | API key environment variable | API base URL |
 | --- | --- | --- | --- |
-| `picgo` (default) | PicGo.net or another API-compatible server | `PICGO_API_KEY` | Defaults to `https://www.picgo.net`; the CLI can change it with `--picgo-url`. |
-| `imgbb` | ImgBB | `IMGBB_API_KEY` | Fixed ImgBB API v1 endpoint. |
+| `picgo` | PicGo.net or another API-compatible server | `PICGO_API_KEY` | Defaults to `https://www.picgo.net`; the CLI can change it with `--picgo-url`. |
+| `imgbb` (default) | ImgBB | `IMGBB_API_KEY` | Fixed ImgBB API v1 endpoint. |
 
 Provider caches are isolated. Switching the destination never reuses a URL or
 content-hash cache entry created for another provider.
@@ -133,7 +133,7 @@ Then:
 
 1. Use **Add files** to multi-select `.txt`, `.md`, or `.markdown` files and
    **Add folder** to add one or more folders. Remove selected targets as needed.
-2. Keep the default **PicGo.net** provider or select **ImgBB**.
+2. Keep the default **ImgBB** provider or select **PicGo.net**.
 3. Paste that provider's API key. It is kept in memory for the current run.
 4. Optionally enter one or more source domains, separated by commas.
 5. Choose whether changed files should be backed up.
@@ -154,13 +154,20 @@ CLI commands must be run from the project directory, where
 
 #### Where to enter the API key
 
+In `img_link_migrator.py`, fill `HARDCODED_IMGBB_API_KEY` and/or
+`HARDCODED_PICGO_API_KEY` to configure separate defaults for the CLI and GUI.
+The GUI loads the matching key when switching providers; an edited field or
+CLI `--api-key` overrides it. Empty defaults fall back to the provider environment
+variable, then manual entry. The standalone `img-link-migrator.command` has the
+same two constants; fill them separately to skip its key prompt for that provider.
+
 - **GUI:** select the provider, then paste its key into the API-key field.
 - **CLI:** use the environment variable matching `--provider`.
 
 | Provider | CLI selector | Environment variable |
 | --- | --- | --- |
-| PicGo.net | `--provider picgo` or omit `--provider` | `PICGO_API_KEY` |
-| ImgBB | `--provider imgbb` | `IMGBB_API_KEY` |
+| PicGo.net | `--provider picgo` | `PICGO_API_KEY` |
+| ImgBB | `--provider imgbb` or omit `--provider` | `IMGBB_API_KEY` |
 
 The command used to set a variable depends on the current shell. Run
 `echo $SHELL`, then use only the matching group below and only the line for the
@@ -308,13 +315,13 @@ Then apply the migration after checking the scan output:
 python3 img_link_migrator.py --apply "$HOME/Documents/MyVault"
 ```
 
-That command uses PicGo.net and reads `PICGO_API_KEY`. To use ImgBB
-instead, set `IMGBB_API_KEY` and select ImgBB explicitly:
+That command uses ImgBB and reads `IMGBB_API_KEY` when no hardcoded key is set.
+To use PicGo.net instead, set `PICGO_API_KEY` and select PicGo.net explicitly:
 
 ```bash
 python3 img_link_migrator.py \
   --apply \
-  --provider imgbb \
+  --provider picgo \
   "$HOME/Documents/MyVault"
 ```
 
@@ -379,9 +386,9 @@ no value: writing the flag enables its behavior.
 | `--gui` | Flag; enter no value after it. | Use CLI behavior. | `python3 img_link_migrator.py --gui` |
 | `--apply` | Flag; enter no value after it. | Scan only. | `python3 img_link_migrator.py --apply "$HOME/Documents/MyVault"` |
 | `--yes` | Flag; enter no value after it. | `--apply` scans and shows domains, then asks for confirmation. | Confirm without a prompt: `python3 img_link_migrator.py --apply --yes "$HOME/Documents/MyVault"`. |
-| `--provider NAME` | Use `imgbb` or `picgo`. | `picgo`, using PicGo.net | `--provider imgbb` selects ImgBB. |
+| `--provider NAME` | Use `imgbb` or `picgo`. | `imgbb`, using ImgBB | `--provider picgo` selects PicGo.net. |
 | `--picgo-url URL` | PicGo API base URL. | `https://www.picgo.net` | For another compatible endpoint: `--provider picgo --picgo-url "https://images.example.com"`. |
-| `--api-key KEY` | Replace `KEY` with the selected provider's API key. | Read `IMGBB_API_KEY` or `PICGO_API_KEY`; apply fails if missing. | `--api-key "YOUR_KEY"`; the matching environment variable is safer. |
+| `--api-key KEY` | Replace `KEY` with the selected provider's API key. | Use the selected provider's hardcoded key, then `IMGBB_API_KEY` or `PICGO_API_KEY`; prompt if missing. | `--api-key "YOUR_KEY"`; the matching environment variable is safer. |
 | `--expiration SECONDS` | Replace `SECONDS` with a number of seconds. | Default `0`, requesting permanent storage. | `60`–`15552000`; PicGo.net receives an equivalent ISO 8601 duration. |
 | `--retries N` | Replace `N` with the retry count. | Default `3`, meaning up to three retries after the first failure. | Range `0`–`10`; `--retries 0` makes one attempt. |
 | `--include-host DOMAIN` | Replace `DOMAIN` with an allowed source domain. | Process every detected external image host. | `--include-host xhscdn.com`; repeat or comma-separate values. |
@@ -575,7 +582,7 @@ Double-click `img-link-migrator.command`, or run it from Terminal:
 
 The program asks only for the following information:
 
-1. Keep the default PicGo.net service or select ImgBB.
+1. Keep the default ImgBB service or select PicGo.net.
 2. Enter that service's API key. Typing is hidden for the current run.
 3. Drag one supported file or directory into Terminal and press Return. Repeat
    for additional targets; submit an empty line when finished.
@@ -590,15 +597,15 @@ The upload-service prompt is:
 
 ```text
 Choose the upload service:
-  Press Return or type 1 for PicGo.net.
-  Type 2 for ImgBB.
+  Press Return or type 1 for ImgBB.
+  Type 2 for PicGo.net API v1.
 Your choice [1]:
 ```
 
 | Input | Upload destination |
 | --- | --- |
-| Press Return, `1`, `picgo`, or `picgo.net` | PicGo.net |
-| `2` or `imgbb` | ImgBB |
+| Press Return, `1`, or `imgbb` | ImgBB |
+| `2`, `picgo`, or `picgo.net` | PicGo.net |
 
 For PicGo.net, the tool sends the image as the `source` multipart field to
 `/api/1/upload` with the `X-API-Key` header.

@@ -16,10 +16,10 @@ readonly DEFAULT_UPLOAD_INTERVAL_SECONDS=1.21
 readonly UPLOAD_RATE_COOLDOWN_SECONDS=60
 readonly CHEVERETO_URL="https://www.picgo.net"
 
-# Optional: enter the API key between the quotes below; leave empty to prompt each run.
-# This key is used for the selected upload service; use that service's key.
+# Optional: enter each service's API key below; leave empty to prompt each run.
 # A configured key skips the prompt and stays hidden; existing format checks still apply.
-readonly HARDCODED_API_KEY=""
+readonly HARDCODED_IMGBB_API_KEY=""
+readonly HARDCODED_PICGO_API_KEY=""
 
 typeset -a target_paths
 typeset -a target_files
@@ -32,9 +32,9 @@ typeset -i reference_count=0
 api_key=""
 target_paths=()
 all_hosts=false
-provider="chevereto"
-provider_name="PicGo.net"
-cache_namespace="chevereto:${CHEVERETO_URL}"
+provider="imgbb"
+provider_name="ImgBB"
+cache_namespace="imgbb"
 parallel_transfers=$DEFAULT_PARALLEL_TRANSFERS
 upload_interval_seconds=$DEFAULT_UPLOAD_INTERVAL_SECONDS
 downloaded_mime="application/octet-stream"
@@ -948,29 +948,33 @@ prompt_settings() {
   print
 
   print -r -- "Choose the upload service:"
-  print -r -- "  Press Return or type 1 for PicGo.net API v1."
-  print -r -- "  Type 2 for ImgBB."
+  print -r -- "  Press Return or type 1 for ImgBB."
+  print -r -- "  Type 2 for PicGo.net API v1."
   read -r "service_input?Your choice [1]: "
   service_input="${service_input:l}"
   case "$service_input" in
-    ""|1|picgo|picgo.net|chevereto)
+    2|picgo|picgo.net|chevereto)
       provider="chevereto"
       provider_name="PicGo.net"
       cache_namespace="chevereto:${CHEVERETO_URL}"
       ;;
-    2|imgbb)
+    ""|1|imgbb)
       provider="imgbb"
       provider_name="ImgBB"
       cache_namespace="imgbb"
       ;;
     *)
-      fail "Choose 1 for PicGo.net or 2 for ImgBB."
+      fail "Choose 1 for ImgBB or 2 for PicGo.net."
       return 1
       ;;
   esac
 
   # Use the configured key first; prompt only when it is empty.
-  api_key="$HARDCODED_API_KEY"
+  if [[ "$provider" == "imgbb" ]]; then
+    api_key="$HARDCODED_IMGBB_API_KEY"
+  else
+    api_key="$HARDCODED_PICGO_API_KEY"
+  fi
   if [[ -z "$api_key" ]]; then
     read -rs "api_key?${provider_name} API key: "
     print
@@ -1457,6 +1461,7 @@ self_test() {
   state_dir="${test_dir}/state"
   cache_file="${state_dir}/url-map.tsv"
   content_cache_file="${state_dir}/content-map.tsv"
+  cache_namespace="chevereto:${CHEVERETO_URL}"
   content_digest="$(file_hash "$text_file")" || return 1
   record_content_cache "$content_digest" \
     "https://origin.picgo.net/content-cache.webp" || return 1

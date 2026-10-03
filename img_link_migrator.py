@@ -2,8 +2,9 @@
 """Migrate external images in Markdown-syntax text files to image hosts.
 
 The module provides both a CLI and a small Tk GUI.  It deliberately stores no
-API key in its runtime state; optionally configure HARDCODED_API_KEY below,
-use the provider environment variable, or enter the key for the current run.
+API key in its runtime state; optionally configure the provider-specific
+hardcoded keys below, use the provider environment variable, or enter the key
+for the current run.
 """
 
 from __future__ import annotations
@@ -34,14 +35,15 @@ from typing import Callable, Dict, Iterable, List, Optional, Sequence, Set, Tupl
 
 APP_NAME = "IMG Link Migrator"
 APP_VERSION = "0.6.2"
-# Optional: enter the selected upload service's API key here; leave empty to prompt.
+# Optional: enter each upload service's API key below; leave empty for fallback.
 # The GUI prefills this key; the CLI uses it before environment variables.
 # An explicit --api-key or an edited GUI field can override it for the current run.
-HARDCODED_API_KEY = ""
+HARDCODED_IMGBB_API_KEY = ""
+HARDCODED_PICGO_API_KEY = ""
 ENV_IMGBB_API_KEY = "IMGBB_API_KEY"
 ENV_PICGO_API_KEY = "PICGO_API_KEY"
 ENV_CHEVERETO_API_KEY = "CHEVERETO_API_KEY"
-DEFAULT_PROVIDER = "chevereto"
+DEFAULT_PROVIDER = "imgbb"
 IMGBB_CACHE_NAMESPACE = "imgbb"
 DEFAULT_CHEVERETO_URL = "https://www.picgo.net"
 MAX_IMAGE_BYTES = 32 * 1024 * 1024
@@ -1289,6 +1291,16 @@ def _provider_api_key_from_environment(provider: str) -> str:
     return value
 
 
+def _provider_default_api_key(provider: str) -> str:
+    if provider == "imgbb":
+        key = HARDCODED_IMGBB_API_KEY
+    elif provider == "chevereto":
+        key = HARDCODED_PICGO_API_KEY
+    else:
+        raise MigrationError("Unsupported upload provider: {}".format(provider))
+    return key or _provider_api_key_from_environment(provider)
+
+
 def _provider_excluded_hosts(
     provider: str, chevereto_url: str = DEFAULT_CHEVERETO_URL
 ) -> Tuple[str, ...]:
@@ -1593,11 +1605,7 @@ def _run_cli(args: argparse.Namespace) -> int:
     client = None
     if args.apply and selected_urls:
         # Prefer an explicit key, then the configured key, then the existing environment fallback.
-        api_key = (
-            args.api_key
-            or HARDCODED_API_KEY
-            or _provider_api_key_from_environment(args.provider)
-        )
+        api_key = args.api_key or _provider_default_api_key(args.provider)
         if not api_key:
             if not sys.stdin.isatty():
                 raise MigrationError("Provide an API key for non-interactive migration.")
@@ -1694,9 +1702,9 @@ class MigratorGUI:
         self.root.geometry("1120x700")
         self.root.minsize(820, 560)
 
-        self.provider_var = tk.StringVar(value="PicGo.net")
+        self.provider_var = tk.StringVar(value="ImgBB")
         self.key_var = tk.StringVar(
-            value=HARDCODED_API_KEY or _provider_api_key_from_environment("chevereto")
+            value=_provider_default_api_key(DEFAULT_PROVIDER)
         )
         self.include_var = tk.StringVar()
         self.expiration_var = tk.StringVar(value="0")
@@ -1762,7 +1770,7 @@ class MigratorGUI:
         provider_box = ttk.Combobox(
             outer,
             textvariable=self.provider_var,
-            values=("PicGo.net", "ImgBB"),
+            values=("ImgBB", "PicGo.net"),
             state="readonly",
         )
         provider_box.grid(
@@ -1770,7 +1778,7 @@ class MigratorGUI:
         )
         provider_box.bind("<<ComboboxSelected>>", self._provider_changed)
 
-        self.key_label = ttk.Label(outer, text="PicGo.net API key")
+        self.key_label = ttk.Label(outer, text="ImgBB API key")
         self.key_label.grid(row=2, column=0, sticky="w", pady=4)
         ttk.Entry(outer, textvariable=self.key_var, show="*").grid(
             row=2, column=1, columnspan=3, sticky="ew", padx=8, pady=4
@@ -1895,7 +1903,7 @@ class MigratorGUI:
                 "PicGo.net" if provider == "chevereto" else "ImgBB"
             )
         )
-        self.key_var.set(HARDCODED_API_KEY or _provider_api_key_from_environment(provider))
+        self.key_var.set(_provider_default_api_key(provider))
 
     def _choose_file(self) -> None:
         selected = self.filedialog.askopenfilenames(
@@ -2401,7 +2409,7 @@ def _build_parser() -> argparse.ArgumentParser:
         type=_parse_provider_argument,
         metavar="NAME",
         default=DEFAULT_PROVIDER,
-        help="Upload provider: picgo or imgbb (default: picgo)",
+        help="Upload provider: picgo or imgbb (default: imgbb)",
     )
     parser.add_argument(
         "--picgo-url",
