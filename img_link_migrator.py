@@ -2,8 +2,8 @@
 """Migrate external images in Markdown-syntax text files to image hosts.
 
 The module provides both a CLI and a small Tk GUI.  It deliberately stores no
-API key on disk; use the provider environment variable or paste the key into
-the GUI for the current run.
+API key in its runtime state; optionally configure HARDCODED_API_KEY below,
+use the provider environment variable, or enter the key for the current run.
 """
 
 from __future__ import annotations
@@ -12,6 +12,7 @@ import argparse
 import dataclasses
 import datetime as dt
 import hashlib
+import getpass
 import json
 import mimetypes
 import os
@@ -32,7 +33,11 @@ from typing import Callable, Dict, Iterable, List, Optional, Sequence, Set, Tupl
 
 
 APP_NAME = "IMG Link Migrator"
-APP_VERSION = "0.6.0"
+APP_VERSION = "0.6.2"
+# Optional: enter the selected upload service's API key here; leave empty to prompt.
+# The GUI prefills this key; the CLI uses it before environment variables.
+# An explicit --api-key or an edited GUI field can override it for the current run.
+HARDCODED_API_KEY = ""
 ENV_IMGBB_API_KEY = "IMGBB_API_KEY"
 ENV_PICGO_API_KEY = "PICGO_API_KEY"
 ENV_CHEVERETO_API_KEY = "CHEVERETO_API_KEY"
@@ -188,6 +193,9 @@ def _app_data_dir() -> pathlib.Path:
 def _host_matches(host: str, rule: str) -> bool:
     host = host.lower().strip(".")
     rule = rule.lower().strip().strip(".")
+    # xhscdn is a host keyword; other rules retain domain/subdomain matching.
+    if rule == "xhscdn":
+        return "xhscdn" in host
     return bool(rule) and (host == rule or host.endswith("." + rule))
 
 
@@ -340,6 +348,8 @@ def extract_image_references(
             start, end = definition.span(group)
             add(original[start:end], offset + start, offset + end, "reference")
 
+    # Bare URLs are supported only in TXT exports and only for xhscdn hosts.
+    # These spans are also used for replacement, so scanning and editing agree.
     if path.suffix.lower() == ".txt":
         for offset, original, masked in allowed_lines:
             if _REFERENCE_DEF_RE.match(masked):
@@ -353,7 +363,13 @@ def extract_image_references(
                     continue
                 while end > start and original[end - 1] in ".,;)]}":
                     end -= 1
-                add(original[start:end], offset + start, offset + end, "bare")
+                url = original[start:end]
+                try:
+                    host = urllib.parse.urlsplit(url).hostname or ""
+                except ValueError:
+                    continue
+                if "xhscdn" in host.lower():
+                    add(url, offset + start, offset + end, "bare")
 
     references.sort(key=lambda item: item.start)
     return references
@@ -673,7 +689,7 @@ class BaseUploadClient:
         def action() -> Tuple[bytes, str, str]:
             headers = {"User-Agent": USER_AGENT, "Accept": "image/*,*/*;q=0.8"}
             host = (urllib.parse.urlsplit(url).hostname or "").lower()
-            if _host_matches(host, "xhscdn.com"):
+            if _host_matches(host, "xhscdn"):
                 headers["Referer"] = "https://www.xiaohongshu.com/"
             request = urllib.request.Request(url, headers=headers, method="GET")
             try:
@@ -1442,7 +1458,7 @@ class CLIProgress:
 
 
 def _run_cli(args: argparse.Namespace) -> int:
-    print("Bare HTTP(S) URLs are recognized if and only if the file is .txt.")
+    print("Bare HTTP(S) URLs with xhscdn in the host are supported only in .txt files.")
     targets = [pathlib.Path(item) for item in args.targets]
     if not targets:
         raise MigrationError("Specify at least one .txt, .md, .markdown file, or directory.")
@@ -1563,20 +1579,35 @@ def _run_cli(args: argparse.Namespace) -> int:
             raise MigrationError(
                 "Migration needs confirmation. Run interactively or pass --yes."
             )
-        try:
-            answer = input("Start migration for these image URLs? [y/N]: ")
-        except EOFError:
-            answer = ""
-        if answer.strip().lower() not in {"y", "yes"}:
-            print("Migration cancelled; no links were changed.")
-            return 0
+        # Only an empty Enter starts migration; other input keeps the prompt open.
+        while True:
+            try:
+                answer = input("Press Enter to start migration for these image URLs: ")
+            except EOFError:
+                raise MigrationError("Input closed before migration was confirmed.")
+            if answer == "":
+                break
+            print("Press Enter without typing anything to start.")
 
     cancel_event = threading.Event()
     client = None
     if args.apply and selected_urls:
+        # Prefer an explicit key, then the configured key, then the existing environment fallback.
+        api_key = (
+            args.api_key
+            or HARDCODED_API_KEY
+            or _provider_api_key_from_environment(args.provider)
+        )
+        if not api_key:
+            if not sys.stdin.isatty():
+                raise MigrationError("Provide an API key for non-interactive migration.")
+            try:
+                api_key = getpass.getpass("{} API key: ".format(args.provider))
+            except EOFError:
+                raise MigrationError("Input closed before an API key was provided.")
         client = _create_upload_client(
             args.provider,
-            args.api_key or _provider_api_key_from_environment(args.provider),
+            api_key,
             args.expiration,
             args.retries,
             cli_progress,
@@ -1665,7 +1696,7 @@ class MigratorGUI:
 
         self.provider_var = tk.StringVar(value="PicGo.net")
         self.key_var = tk.StringVar(
-            value=_provider_api_key_from_environment("chevereto")
+            value=HARDCODED_API_KEY or _provider_api_key_from_environment("chevereto")
         )
         self.include_var = tk.StringVar()
         self.expiration_var = tk.StringVar(value="0")
@@ -1756,8 +1787,8 @@ class MigratorGUI:
             text=(
                 "Leave empty for every external image host; separate hosts "
                 "with commas. Existing links from the selected destination "
-                "are skipped.\nBare HTTP(S) URLs are recognized if and only "
-                "if the file is .txt."
+                "are skipped.\nBare HTTP(S) URLs are supported only in .txt "
+                "files when the host contains xhscdn."
             ),
             wraplength=1000,
             justify="left",
@@ -1864,7 +1895,7 @@ class MigratorGUI:
                 "PicGo.net" if provider == "chevereto" else "ImgBB"
             )
         )
-        self.key_var.set(_provider_api_key_from_environment(provider))
+        self.key_var.set(HARDCODED_API_KEY or _provider_api_key_from_environment(provider))
 
     def _choose_file(self) -> None:
         selected = self.filedialog.askopenfilenames(
@@ -1979,19 +2010,34 @@ class MigratorGUI:
         skipped_text = "\nSkipped domains: {}".format(
             ", ".join(sorted(self.skipped_domains))
         ) if self.skipped_domains else ""
-        if not self.messagebox.askyesno(
-            "Confirm migration",
-            "Domains to migrate:\n{}{}\n\n"
-            "Successful uploads will modify the selected text files. "
-            "{} Continue?".format(
+        # Match the CLI confirmation: only Enter proceeds; other keys keep waiting.
+        confirmation = self.tk.Toplevel(self.root)
+        confirmation.title("Confirm migration")
+        confirmation.transient(self.root)
+        self.ttk.Label(
+            confirmation,
+            text=(
+                "Domains to migrate:\n{}{}\n\n"
+                "Successful uploads will modify the selected text files. "
+                "{}\n\nPress Enter to start migration. Other keys keep waiting."
+            ).format(
                 included_domains,
                 skipped_text,
                 "Original files will be backed up first."
                 if self.backup_var.get()
-                else "Backups are disabled for this run."
+                else "Backups are disabled for this run.",
             ),
-        ):
-            return
+            wraplength=600,
+            justify="left",
+            padding=20,
+        ).pack()
+        confirmation.bind("<Return>", lambda _event: confirmation.destroy())
+        confirmation.bind("<KP_Enter>", lambda _event: confirmation.destroy())
+        confirmation.protocol("WM_DELETE_WINDOW", lambda: None)
+        confirmation.grab_set()
+        confirmation.wait_visibility()
+        confirmation.focus_set()
+        self.root.wait_window(confirmation)
         self._start(True, selected_urls)
 
     def _domain_for_choice(self) -> Optional[str]:
@@ -2392,7 +2438,7 @@ def _build_parser() -> argparse.ArgumentParser:
         "--include-host",
         action="append",
         default=[],
-        help="Only migrate matching hosts; repeat or comma-separate values",
+        help="Only migrate matching hosts; xhscdn is a keyword; repeat or comma-separate values",
     )
     parser.add_argument(
         "--exclude-host",

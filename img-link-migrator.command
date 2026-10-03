@@ -5,16 +5,21 @@ setopt PIPE_FAIL
 setopt EXTENDED_GLOB
 
 readonly APP_NAME="IMG Link Migrator Standalone"
-readonly APP_VERSION="0.6.0"
+readonly APP_VERSION="0.6.2"
 readonly USER_AGENT="IMG-Link-Migrator-Standalone/${APP_VERSION}"
 readonly MAX_IMAGE_BYTES=33554432
-readonly DEFAULT_HOST="xhscdn.com"
+readonly DEFAULT_HOST="xhscdn"
 readonly MAX_ATTEMPTS=4
 readonly DEFAULT_PARALLEL_TRANSFERS=3
 readonly UPLOADS_PER_MINUTE=50
 readonly DEFAULT_UPLOAD_INTERVAL_SECONDS=1.21
 readonly UPLOAD_RATE_COOLDOWN_SECONDS=60
 readonly CHEVERETO_URL="https://www.picgo.net"
+
+# Optional: enter the API key between the quotes below; leave empty to prompt each run.
+# This key is used for the selected upload service; use that service's key.
+# A configured key skips the prompt and stays hidden; existing format checks still apply.
+readonly HARDCODED_API_KEY=""
 
 typeset -a target_paths
 typeset -a target_files
@@ -98,6 +103,11 @@ host_is_selected() {
 
   host_is_destination "$host" && return 1
   [[ "$all_hosts" == true ]] && return 0
+
+  # Match xhscdn as a case-insensitive host keyword; other rules match domains and subdomains.
+  if (( ${source_hosts[(Ie)xhscdn]} > 0 )) && [[ "$host" == *xhscdn* ]]; then
+    return 0
+  fi
 
   for rule in "${source_hosts[@]}"; do
     if [[ "$host" == "$rule" || "$host" == *."$rule" ]]; then
@@ -229,12 +239,16 @@ markdown_image_urls() {
         print((defined $2 ? $2 : $3), "\n") if $reference_ids{$id};
       }
     }
+    # TXT exports often list bare image URLs; accept only hosts containing xhscdn, ignoring case.
+    # Markdown files and other hosts require image syntax to avoid treating web links as images.
     if ($ARGV =~ /\.txt\z/i) {
       for my $line (@lines) {
         next if $line =~ /^\s*\[[^\]\r\n]+\]:/;
         while ($line =~ /(?<![\w<"=\x27])https?:\/\/[^\s<"\x27]+/ig) {
           my $url = $&;
-          my $prefix = substr($line, 0, $-[0]);
+          my $start = $-[0];
+          next unless $url =~ m{^https?://[^/:?#]*xhscdn[^/:?#]*(?=[/:?#]|$)}i;
+          my $prefix = substr($line, 0, $start);
           next if $prefix =~ /\]\(\s*$/;
           next if $prefix =~ /<[^>]*\b(?:src|href)\s*=\s*$/i;
           print($url, "\n");
@@ -555,7 +569,7 @@ download_image() {
       --output "$output_file"
       --write-out '%{content_type}'
     )
-    if [[ "$host" == "xhscdn.com" || "$host" == *."xhscdn.com" ]]; then
+    if [[ "$host" == *xhscdn* ]]; then
       curl_args+=(--referer 'https://www.xiaohongshu.com/')
     fi
 
@@ -865,6 +879,21 @@ replace_url_in_file() {
             $id =~ s/^\s+|\s+$//g;
             push @spans, [$-[2], $+[2]] if $reference_ids{$id};
           }
+          # Follow the scan rule: replace bare URLs only in TXT files with xhscdn in the host.
+          # Skip reference definitions, Markdown links, and HTML attributes to avoid duplicate edits.
+          if ($ARGV =~ /\.txt\z/i && $masked[$index] !~ /^\s*\[[^\]\r\n]+\]:/) {
+            while ($masked[$index] =~ /(?<![\w<"=\x27])https?:\/\/[^\s<"\x27]+/ig) {
+              my $url = $&;
+              my $start = $-[0];
+              next unless $url =~ m{^https?://[^/:?#]*xhscdn[^/:?#]*(?=[/:?#]|$)}i;
+              my $prefix = substr($masked[$index], 0, $start);
+              next if $prefix =~ /\]\(\s*$/;
+              next if $prefix =~ /<[^>]*\b(?:src|href)\s*=\s*$/i;
+              # Scanning trims trailing punctuation; preserve that punctuation when replacing the URL.
+              $url =~ s/[)\]},;.]+$//;
+              push @spans, [$start, $start + length($url)] if $url eq $ENV{OLD_URL};
+            }
+          }
           for my $span (sort { $b->[0] <=> $a->[0] } @spans) {
             substr($lines[$index], $span->[0], $span->[1] - $span->[0], $ENV{NEW_URL});
           }
@@ -915,7 +944,7 @@ prompt_settings() {
 
   print -r -- "${APP_NAME} ${APP_VERSION}"
   print -r -- "Scans Markdown image syntax in .txt, .md, and .markdown files."
-  print -r -- "Bare HTTP(S) URLs are recognized if and only if the file is .txt."
+  print -r -- "Bare HTTP(S) URLs with xhscdn in the host are supported only in .txt files."
   print
 
   print -r -- "Choose the upload service:"
@@ -940,8 +969,12 @@ prompt_settings() {
       ;;
   esac
 
-  read -rs "api_key?${provider_name} API key: "
-  print
+  # Use the configured key first; prompt only when it is empty.
+  api_key="$HARDCODED_API_KEY"
+  if [[ -z "$api_key" ]]; then
+    read -rs "api_key?${provider_name} API key: "
+    print
+  fi
   [[ -n "$api_key" ]] || {
     fail "${provider_name} API key is required."
     return 1
@@ -964,10 +997,10 @@ prompt_settings() {
 
   print
   print -r -- "Choose where the original image links come from:"
-  print -r -- "  Press Return to use xhscdn.com and its subdomains."
+  print -r -- "  Press Return to match hosts containing the keyword xhscdn."
   print -r -- "  Or type domains separated by commas: xhscdn.com,example.com"
-  print -r -- "  Or type * to check every domain; bare URLs are included only from .txt."
-  read -r "source_input?Your choice [xhscdn.com]: "
+  print -r -- "  Or type * to check every domain; bare URLs with xhscdn in the host are included only from .txt."
+  read -r "source_input?Your choice [xhscdn]: "
   source_input="${source_input:l}"
   source_input="${source_input//[[:space:]]/}"
 
@@ -1122,12 +1155,16 @@ show_scan_summary() {
     return 1
   fi
 
-  read -r "start_input?Start migration and upload these images? [y/N]: "
-  start_input="${start_input:l}"
-  if [[ "$start_input" != "y" && "$start_input" != "yes" ]]; then
-    print -r -- "Migration cancelled; no links were changed."
-    return 1
-  fi
+  # Start only on an empty Enter; other input keeps waiting without cancelling migration.
+  while true; do
+    if IFS= read -r "start_input?Press Enter to start migration and upload these images: "; then
+      [[ -z "$start_input" ]] && break
+      print -r -- "Press Enter without typing anything to start."
+    else
+      # Avoid a busy loop on closed input; nonempty terminal input does not reach this branch.
+      return 1
+    fi
+  done
   print -r -- "Starting migration..."
 }
 
