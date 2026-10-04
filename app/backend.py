@@ -8,6 +8,7 @@ import threading
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
 import img_link_migrator as core
+from image_processing import ImageProcessor
 
 
 class Service:
@@ -81,8 +82,10 @@ class Service:
             selected = set(request.get("selectedURLs", []))
             if action == "retry":
                 selected &= set(self.report.failed_urls) if self.report else set()
+            processor = ImageProcessor(provider, config.get("mode", "size_limit"),
+                                       config.get("platformLimit"), self.cancel)
             engine = core.MigrationEngine(store, client, include, exclude, self.emit, self.cancel,
-                                          expiration, config.get("backup", True))
+                                          expiration, config.get("backup", True), image_processor=processor)
             self.report = engine.run(targets, True, selected, self.plans)
             report = self.clean(self.report.as_dict())
             if config.get("reportPath"):

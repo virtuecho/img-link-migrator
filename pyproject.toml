@@ -12,7 +12,7 @@ license = { file = "LICENSE" }
 authors = [
   { name = "virtuecho" }
 ]
-dependencies = []
+dependencies = ["pyvips[binary]==3.2.0"]
 
 [tool.setuptools]
-py-modules = ["img_link_migrator"]
+py-modules = ["img_link_migrator", "image_processing"]

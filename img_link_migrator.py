@@ -36,7 +36,7 @@ ENV_CHEVERETO_API_KEY = "CHEVERETO_API_KEY"
 DEFAULT_PROVIDER = "imgbb"
 IMGBB_CACHE_NAMESPACE = "imgbb"
 DEFAULT_CHEVERETO_URL = "https://www.picgo.net"
-MAX_IMAGE_BYTES = 32 * 1024 * 1024
+MAX_IMAGE_BYTES = 100_000_000
 UPLOADS_PER_MINUTE = 50
 MIN_UPLOAD_INTERVAL_SECONDS = 1.21
 UPLOAD_RATE_COOLDOWN_SECONDS = 60.0
@@ -121,6 +121,7 @@ class UrlResult:
     new_url: Optional[str] = None
     status: str = "pending"
     detail: str = ""
+    image: dict = dataclasses.field(default_factory=dict)
 
     @property
     def succeeded(self) -> bool:
@@ -688,7 +689,7 @@ class BaseUploadClient:
                 with urllib.request.urlopen(request, timeout=30) as response:
                     content_length = response.headers.get("Content-Length")
                     if content_length and int(content_length) > MAX_IMAGE_BYTES:
-                        raise MigrationError("Image exceeds the 32 MB safety limit.")
+                        raise MigrationError("Image exceeds the 100 MB download limit.")
                     chunks: List[bytes] = []
                     total = 0
                     while True:
@@ -698,7 +699,7 @@ class BaseUploadClient:
                             break
                         total += len(chunk)
                         if total > MAX_IMAGE_BYTES:
-                            raise MigrationError("Image exceeds the 32 MB safety limit.")
+                            raise MigrationError("Image exceeds the 100 MB download limit.")
                         chunks.append(chunk)
                     data = b"".join(chunks)
                     if not data:
@@ -979,8 +980,10 @@ class MigrationEngine:
         expiration: int = 0,
         backup_enabled: bool = True,
         cache_namespace: Optional[str] = None,
+        image_processor=None,
     ) -> None:
         self.store = store
+        self.image_processor = image_processor
         self.client = client
         self.include_hosts = tuple(include_hosts)
         self.exclude_hosts = tuple(exclude_hosts)
@@ -991,6 +994,8 @@ class MigrationEngine:
         self.cache_namespace = cache_namespace or getattr(
             client, "cache_namespace", IMGBB_CACHE_NAMESPACE
         )
+        if image_processor:
+            self.cache_namespace += ":" + image_processor.namespace
 
     def _write_completed_url(
         self,
@@ -1174,6 +1179,12 @@ class MigrationEngine:
                     continue
                 try:
                     data, content_type, filename = self.client.download(url)
+                    image_detail = {}
+                    if self.image_processor:
+                        prepared = self.image_processor.prepare(data, filename)
+                        data, content_type, filename = prepared.data, prepared.content_type, prepared.filename
+                        image_detail = prepared.detail
+                        _notify(self.callback, kind="image_prepared", url=url, **image_detail)
                     digest = hashlib.sha256(data).hexdigest()
                     hash_cached = self.store.lookup_hash(
                         digest, self.expiration, namespace=self.cache_namespace
@@ -1204,7 +1215,7 @@ class MigrationEngine:
                             self.expiration,
                             namespace=self.cache_namespace,
                         )
-                        result = UrlResult(url, new_url, "uploaded", "Upload succeeded.")
+                        result = UrlResult(url, new_url, "uploaded", "Upload succeeded.", image_detail)
                         report.uploaded_urls += 1
                     results[url] = result
                     write_errors = self._write_completed_url(
