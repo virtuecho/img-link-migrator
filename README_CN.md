@@ -1,663 +1,159 @@
 # IMG Link Migrator
 
-[English](README.md) | **简体中文**
+[English](README.md)
 
-本仓库包含两个互相独立的图片链接迁移程序：
+原生 macOS 图片链接迁移应用：处理文档中的外链图片，上传至 ImgBB 或兼容 PicGo 的服务，再替换文档链接。应用内置 Python 和图片编解码器，使用者无需安装 Python、Homebrew 或插件。界面、提示、日志、代码注释均为英语。
 
-1. `img_link_migrator.py`：Python Markdown GUI/CLI。
-2. `img-link-migrator.command`：处理 `.txt`、`.md` 和 `.markdown` 文件中
-   Markdown 图片语法，并且只在 `.txt` 中识别裸 URL 的 macOS 单文件程序。
+## 安装
 
-两个程序分别拥有自己的运行环境、扫描规则、输入提示、缓存和安全行为。一套程序的
-文档不适用于另一套程序。两个程序都支持以下上传目标：
+需要 macOS 13 或更新版本。按 Mac 的处理器选择独立安装包：
 
-- [ImgBB API v1](https://api.imgbb.com/1/upload)
-- [PicGo.net API v1.1](https://www.picgo.net/api-v1/?lang=en)
-
-## 链接识别规则
-
-两个程序对 `.txt`、`.md` 和 `.markdown` 使用以下规则：
-
-| 文件扩展名 | Markdown 行内图片、已使用的引用式图片和 HTML `<img src>` | 裸 HTTP(S) URL |
-| --- | --- | --- |
-| `.txt` | 识别 | 识别 |
-| `.md`、`.markdown` | 识别 | 不识别 |
-
-**当且仅当文件扩展名是 `.txt` 时，程序才识别裸 HTTP(S) URL。**例如，
-`notes.txt` 中单独一行的 `https://images.example.com/a` 会成为候选链接；同一行
-位于 `notes.md` 或 `notes.markdown` 时则不会。`.txt` 中所有符合所选来源域名的
-裸 HTTP(S) URL 都会成为候选，不要求 URL 以图片扩展名结尾。下载后不会检查内容特征
-来判断它是不是图片。
-
-三种扩展名都识别以下图片语法：
-
-- Markdown 行内图片，例如 `![说明](https://example.com/a.png)` 和 `![](URL)`。
-- 已实际使用的完整引用式图片，例如 `![说明][photo]`，以及对应的
-  `[photo]: URL` 定义；没有被引用的定义会忽略。
-- `src` 属性为 HTTP(S) URL 的 HTML `<img>` 元素，支持带引号和不带引号的属性值。
-
-`.txt` 的裸 URL 规则不会把普通 Markdown 链接（例如 `[网站](URL)`）、HTML 链接
-（例如 `<a href="URL">`）或尖括号自动链接（例如 `<URL>`）当作图片候选。
-Obsidian 本地附件语法 `![[image.png]]` 也不是外部 URL，因此不会改动。两个扫描器
-都会跳过 YAML frontmatter、围栏代码块和行内代码。
-
-候选链接还必须符合所选来源域名规则；域名规则同时包含该域名及其子域名。属于所选
-上传目标平台的链接会排除。Python 的域名筛选为空时表示所有外部域名；独立单文件工具
-默认只选择 `xhscdn.com` 及其子域名，也可以输入 `*` 选择所有域名。
-
-Python CLI/GUI 和 `.command` 的启动界面都会提示：**当且仅当文件是 `.txt` 时才识别
-裸 HTTP(S) URL。**
-
-## Python Markdown GUI/CLI
-
-Python 程序主要面向 Obsidian vault 和其他 UTF-8 文本文件。所有支持的扩展名都识别
-常见 Markdown 图片语法，只有 `.txt` 会额外识别裸 HTTP(S) URL。
-
-### Python 上传平台
-
-| `--provider` 取值 | 上传目标 | API key 环境变量 | API 基础 URL |
-| --- | --- | --- | --- |
-| `picgo` | PicGo.net 或其他兼容 API 的服务 | `PICGO_API_KEY` | 默认 `https://www.picgo.net`；CLI 可使用 `--picgo-url` 修改。 |
-| `imgbb`（默认） | ImgBB | `IMGBB_API_KEY` | 固定使用 ImgBB API v1。 |
-
-不同平台使用互相隔离的缓存。切换上传目标时，不会复用其他平台保存的 URL 或图片
-内容哈希缓存。
-
-两个平台使用相同的单次任务上传请求限制：每分钟不超过 50 次，上传请求开始时间至少
-间隔 1.21 秒。自动重试也必须经过同一个限速器，因此同样计入限制。如果平台返回
-`Flooding`、`rate limit` 或 `too many requests`，全部上传会统一暂停 60 秒，然后
-自动继续重试。下载、缓存复用和本地文件写入不占用上传名额。
-
-当 PicGo.net 返回 `Duplicated upload` 并提供有效的现有图片 URL 时，两个程序都会把
-该 URL 作为成功结果直接复用。随后保存内容哈希；以后即使来源 URL 不同，只要图片
-字节完全相同，也会跳过上传请求。
-
-GUI 提供 PicGo.net 选项。Python CLI 会使用 `X-API-Key` 请求头，并把图片放入名为
-`source` 的 multipart 字段，发送到 `/api/1/upload`。可以使用 `--picgo-url` 指定
-兼容的 API 地址。
-
-### Python 程序功能
-
-- 通过原生 GUI 选择单个 `.txt`、`.md`、`.markdown` 文件或整个文件夹。
-- 正式迁移前先安全扫描，不修改文件。
-- 可以迁移所有外链图片，也可以限定指定来源域名。
-- 识别 Markdown 行内图片、已使用的引用式图片和 HTML `<img src="URL">`；裸 HTTP(S) URL 只在 `.txt` 文件中识别。
-- 自动跳过 YAML 属性区、代码块、行内代码、隐藏文件夹和所选目标平台的现有链接。
-- 下载所选链接，并执行本地 32 MB 大小限制；下载后不按文件内容特征验证图片类型。
-- 显示每张图片的进度、缓存复用、成功和失败详情。
-- 两个平台都限制为每分钟最多发送 50 次上传请求。
-- 支持自动重试，也可以在 GUI 中手动重试失败项目。
-- 相同 URL 只处理一次；内容完全相同的图片也会去重。
-- 每张图片完成后立即原子替换对应链接，再处理下一张图片。
-- 可以选择是否备份发生改动的 Markdown 文件。
-- 如果文件在扫描后被其他程序修改，会停止写入，避免覆盖新内容。
-- API key 不会写入文件、报告、备份或持久化缓存。
-
-### Python 程序要求
-
-- Python 3.9 或更高版本
-- 正式迁移时需要所选上传平台的 API key
-- GUI 需要 Tk
-
-Homebrew 将 Tk 与 Python 分开提供。如果 GUI 提示找不到可用的 Tk，请查找并安装
-与所选 Python 解释器匹配的版本：
-
-```bash
-brew search python-tk
-```
-
-Tk 仅供 GUI 使用。
-
-### Python GUI
-
-在 macOS 上双击 `launch-gui.command`，或者运行：
-
-```bash
-python3 img_link_migrator.py --gui
-```
-
-操作步骤：
-
-1. 点击 `Add files` 可多选文本文件；点击 `Add folder` 可逐个加入文件夹。选中列表项后可移除。
-2. 保留默认的 **ImgBB**，或者改选 **PicGo.net**。
-3. 粘贴该平台的 API key。它只会保存在本次运行的内存中。
-4. 根据需要填写一个或多个来源域名，多个域名使用英文逗号分隔。
-5. 选择是否在修改文件前创建备份。
-6. 点击 `Scan`，预览检测到的图片链接。
-7. 扫描结果会按序号列出来源域名。输入序号并点击 `Show candidate URLs` 可查看该域名下的全部链接。弹窗中可点击返回、跳过或重新包含；主窗口也有 `Skip domain` 和 `Include domain` 按钮。点击 `Start migration` 并确认后才会开始上传。
-8. 如果存在失败项目，点击 `Retry failed`。
-
-来源域名留空时会处理所有外链图片。所选目标平台自己的域名会被排除，避免重复上传。
-
-### Python CLI
-
-CLI 指在终端中输入命令。下面的命令需要在项目目录中执行，也就是当前目录里应该能
-看到 `img_link_migrator.py`。如果终端当前不在项目目录，可以输入 `cd`、空格，
-然后把项目文件夹从 Finder 拖入终端，按回车。
-
-#### API key 填在哪里
-
-在 `img_link_migrator.py` 中分别填写 `HARDCODED_IMGBB_API_KEY` 和
-`HARDCODED_PICGO_API_KEY`，即可为 Python CLI 和 GUI 设置两个平台各自的默认密钥。
-GUI 切换平台时自动载入对应密钥；手动修改输入框或 CLI 的 `--api-key` 可以覆盖默认值。
-留空时先读取对应环境变量，再提示手动输入。独立脚本 `img-link-migrator.command`
-也有同名的两个配置项，需单独填写；所选平台的配置为空时仍提示输入密钥。
-
-- **GUI**：先选择上传平台，再把对应密钥粘贴到 API key 输入框。
-- **CLI**：使用与 `--provider` 对应的环境变量。
-
-| 上传平台 | CLI 选择方式 | 环境变量 |
-| --- | --- | --- |
-| PicGo.net | `--provider picgo` | `PICGO_API_KEY` |
-| ImgBB | `--provider imgbb`，或者省略 `--provider` | `IMGBB_API_KEY` |
-
-设置变量的命令取决于当前 shell。先运行 `echo $SHELL`，然后只使用下面与当前 shell
-匹配的一组命令，并且只执行所选上传平台对应的输入行。
-
-##### fish
-
-如果终端提示符类似 `目录 (main)>`，并且错误信息中出现
-`See help identifiers`，通常正在使用 fish。
-
-1. 复制所选上传平台的 API key。
-2. 运行下面的输入命令。
-3. 终端显示 `API key:` 后粘贴密钥并按回车。fish 可能用 `*` 遮罩输入。
-
-```fish
-# ImgBB
-read --silent --global --export --prompt-str 'API key: ' IMGBB_API_KEY
-
-# PicGo.net
-read --silent --global --export --prompt-str 'API key: ' PICGO_API_KEY
-```
-
-确认所选变量已经设置，不显示密钥内容：
-
-```fish
-set --query IMGBB_API_KEY; and echo 'API key 已设置'; or echo 'API key 未设置'
-set --query PICGO_API_KEY; and echo 'API key 已设置'; or echo 'API key 未设置'
-```
-
-使用结束后清除：
-
-```fish
-set --erase --global IMGBB_API_KEY
-set --erase --global PICGO_API_KEY
-```
-
-##### zsh
-
-```zsh
-# ImgBB
-read -s "IMGBB_API_KEY?API key: "; echo
-export IMGBB_API_KEY
-
-# PicGo.net
-read -s "PICGO_API_KEY?API key: "; echo
-export PICGO_API_KEY
-```
-
-确认已经设置：
-
-```zsh
-# 只执行所选上传平台对应的一行。
-[[ -n "${IMGBB_API_KEY:-}" ]] && echo "API key 已设置" || echo "API key 未设置"
-[[ -n "${PICGO_API_KEY:-}" ]] && echo "API key 已设置" || echo "API key 未设置"
-```
-
-使用结束后清除：
-
-```zsh
-unset IMGBB_API_KEY
-unset PICGO_API_KEY
-```
-
-##### bash
-
-```bash
-# ImgBB
-IFS= read -r -s -p "API key: " IMGBB_API_KEY; echo
-export IMGBB_API_KEY
-
-# PicGo.net
-IFS= read -r -s -p "API key: " PICGO_API_KEY; echo
-export PICGO_API_KEY
-```
-
-确认已经设置：
-
-```bash
-# 只执行所选上传平台对应的一行。
-[[ -n "${IMGBB_API_KEY:-}" ]] && echo "API key 已设置" || echo "API key 未设置"
-[[ -n "${PICGO_API_KEY:-}" ]] && echo "API key 已设置" || echo "API key 未设置"
-```
-
-使用结束后清除：
-
-```bash
-unset IMGBB_API_KEY
-unset PICGO_API_KEY
-```
-
-设置后，这个终端会话中的迁移命令会自动读取所选平台的 API key。变量只对当前终端
-会话有效，关闭该会话后会失效。
-
-API key 只在执行 `--apply` 实际上传时需要。仅扫描和打开 GUI 时不需要提前设置。
-
-也可以直接使用 `--api-key`，但密钥可能进入终端历史或进程列表。以下示例使用
-PicGo.net：
-
-```bash
-python3 img_link_migrator.py \
-  --apply \
-  --provider picgo \
-  --api-key "YOUR_PICGO_API_KEY" \
-  "$HOME/Documents/MyVault"
-```
-
-#### 目标路径是什么
-
-“目标”是要扫描的 `.txt`、`.md`、`.markdown` 文件或文件夹路径：
-
-- `./note.md`：当前目录中的 `note.md` 文件。
-- `./notes`：当前目录中的 `notes` 文件夹。它只是示例；如果没有这个文件夹，就要
-  换成自己的路径。
-- `"$HOME/Documents/MyVault"`：位于当前用户文档目录中的示例 vault。
-
-`.` 表示终端当前目录，`$HOME` 表示当前用户的主目录。路径含有空格或中文时，应使用
-英文双引号包住整个路径。
-
-Python CLI 可在命令后传入多个文件或文件夹路径作为独立参数。路径含空格时用引号包住；
-也可以把路径从 Finder 拖到终端命令行。
-
-#### 最常用的完整流程
-
-以下示例中的 `"$HOME/Documents/MyVault"` 只是演示路径，执行前必须换成自己的文件
-或文件夹路径。
-
-第一步，只扫描并查看会处理哪些链接，不上传、不改文件：
-
-```bash
-python3 img_link_migrator.py "$HOME/Documents/MyVault"
-```
-
-扫描会按序号列出来源域名和对应的唯一 URL 数量，不再一次性输出所有候选链接。在交互式
-终端中输入 `N` 查看第 N 个域名下的全部 URL。查看后按回车或输入 `b` 返回域名列表，
-输入 `x` 跳过当前域名；在域名列表输入 `x N` 可跳过第 N 个域名（例如 `x 2`），输入
-`i N` 可重新包含第 N 个域名（例如 `i 2`）。最后按回车继续。
-
-迁移期间，交互式 CLI 会在同一行更新进度；GUI 则在每张图片对应的状态行中更新进度。
-
-第二步，确认扫描结果后执行迁移。下面的默认写法使用 ImgBB，未填写硬编码密钥时读取
-`IMGBB_API_KEY`：
-
-```bash
-python3 img_link_migrator.py --apply "$HOME/Documents/MyVault"
-```
-
-如果改为上传到 PicGo.net，请设置 `PICGO_API_KEY` 并显式选择 PicGo.net：
-
-```bash
-python3 img_link_migrator.py \
-  --apply \
-  --provider picgo \
-  "$HOME/Documents/MyVault"
-```
-
-如果只想处理某个来源域名，添加 `--include-host`。下面用小红书 CDN 举例，这个参数
-同样可以填写其他图片域名：
-
-```bash
-python3 img_link_migrator.py \
-  --apply \
-  --include-host xhscdn.com \
-  "$HOME/Documents/MyVault"
-```
-
-关闭默认备份：
-
-```bash
-python3 img_link_migrator.py \
-  --apply \
-  --no-backup \
-  "$HOME/Documents/MyVault"
-```
-
-迁移后生成 JSON 报告：
-
-```bash
-python3 img_link_migrator.py \
-  --apply \
-  --report report.json \
-  "$HOME/Documents/MyVault"
-```
-
-#### CLI 模式与参数
-
-CLI 有三种基本写法：
-
-```text
-打开 GUI：python3 img_link_migrator.py --gui
-只扫描示例：python3 img_link_migrator.py "$HOME/Documents/MyVault"
-迁移示例：  python3 img_link_migrator.py --apply "$HOME/Documents/MyVault"
-```
-
-文档中常见的命令格式符号只用于说明，不要原样输入：
-
-| 格式符号 | 含义 | 示例 |
-|---|---|---|
-| `[内容]` | 可选内容，可以完全不写；方括号本身不输入。 | `[选项]` 表示可以添加选项，也可以不添加。 |
-| `<内容>` | 必须换成自己的实际值；尖括号本身不输入。 | `<目标>` 应换成 Markdown 文件或文件夹路径。 |
-| `...` | 前一项可以重复多次；三个点本身不输入。 | `<目标> ...` 表示可以连续填写多个路径。 |
-| 大写单词 | 需要替换的值，不是固定文字。 | `KEY` 换成 API key，`SECONDS` 换成秒数。 |
-
-| 运行方式 | 是否下载或上传 | 是否修改 Markdown | 什么时候使用 |
-|---|---:|---:|---|
-| 指定目标，但不写 `--apply` | 否 | 否 | 列出来源域名和链接数量；按域名序号查看候选 URL。 |
-| 添加 `--apply` | 是 | 是，只替换上传成功项 | 确认扫描结果后执行正式迁移。 |
-| 添加 `--gui` | 点击 `Start migration` 后才会请求 | 用户确认后才会修改 | 使用桌面界面选择目标和设置参数。 |
-
-`--gui` 和 `--apply` 不能同时使用。
-
-“默认值”表示不写该参数时程序自动采用的设置。“开关”表示参数后面不填写值：写出它
-就是开启相应行为，不写就是关闭。
-
-| 参数 | 你需要填写什么 | 不写这个参数时 | 作用与示例 |
-|---|---|---|---|
-| `目标路径` | 一个或多个 `.txt`、`.md`、`.markdown` 文件或文件夹路径，不要输入单词 `targets`。 | 扫描和迁移模式必须有目标；单独运行程序会打开 GUI。 | `"$HOME/Documents/MyVault"`；多个目标写成 `"folder-a" "note-b.md"`。 |
-| `--gui` | 后面不填值。 | 使用 CLI；有目标时默认只扫描。 | `python3 img_link_migrator.py --gui` |
-| `--apply` | 后面不填值。 | 只扫描，不下载、不上传、不修改文件。 | `python3 img_link_migrator.py --apply "$HOME/Documents/MyVault"` |
-| `--yes` | 后面不填值。 | `--apply` 会在扫描并显示域名后等待确认。 | 无交互地确认迁移：`python3 img_link_migrator.py --apply --yes "$HOME/Documents/MyVault"`。 |
-| `--provider NAME` | `NAME` 填 `imgbb` 或 `picgo`。 | `imgbb`，使用 ImgBB | `--provider picgo` 选择 PicGo.net。 |
-| `--picgo-url URL` | PicGo API 基础 URL。 | `https://www.picgo.net` | 其他兼容 API 地址：`--provider picgo --picgo-url "https://images.example.com"`。 |
-| `--api-key KEY` | 把 `KEY` 换成所选平台的 API key。 | 先使用对应平台的硬编码密钥，再读取 `IMGBB_API_KEY` 或 `PICGO_API_KEY`；缺少时提示输入。 | `--api-key "YOUR_KEY"`；使用对应环境变量更安全。 |
-| `--expiration SECONDS` | 把 `SECONDS` 换成自动删除前的秒数。 | 默认 `0`，请求永久保存。 | 范围 `60`–`15552000`；PicGo.net 会收到等价的 ISO 8601 时间段。 |
-| `--retries N` | 把 `N` 换成失败后的自动重试次数。 | 默认 `3`，即首次失败后最多再重试 3 次。 | 范围 `0`–`10`；`--retries 0` 表示只尝试一次。 |
-| `--include-host DOMAIN` | 把 `DOMAIN` 换成只想处理的来源域名。 | 不限制来源域名，处理所有检测到的外链图片。 | `--include-host xhscdn.com`；可重复使用或用英文逗号分隔。 |
-| `--exclude-host DOMAIN` | 把 `DOMAIN` 换成不想处理的来源域名。 | 不增加额外排除项；所选目标平台仍会排除。 | `--exclude-host example.com`；可重复使用或用英文逗号分隔。 |
-| `--state-dir PATH` | 把 `PATH` 换成缓存和备份目录。 | 使用对应系统的应用数据目录。 | `--state-dir "./migrator-state"` |
-| `--no-backup` | 后面不填值。 | 默认在修改 Markdown 前创建备份。 | 添加后关闭本次备份：`--apply --no-backup "$HOME/Documents/MyVault"`。 |
-| `--report PATH` | 把 `PATH` 换成 JSON 报告文件位置。 | 不生成 JSON 报告。 | `--report "./report.json"` |
-| `-h`、`--help` | 后面不填值。 | 正常执行命令。 | 显示帮助：`python3 img_link_migrator.py --help`。 |
-
-查看程序生成的命令帮助：
-
-```bash
-python3 img_link_migrator.py --help
-```
-
-### Python 备份与状态文件
-
-备份默认开启，也可以关闭：
-
-- GUI：取消勾选 `Back up before changes`。
-- CLI：添加 `--no-backup`。
-
-URL/图片内容缓存以及可选备份都保存在所选 vault 之外：
-
-- macOS：`~/Library/Application Support/IMG Link Migrator/`
-- Windows：`%APPDATA%/IMG Link Migrator/`
-- Linux：`$XDG_STATE_HOME/img-link-migrator/`，如果没有设置该变量则使用
-  `~/.local/state/img-link-migrator/`
-
-每次备份都会建立一个带时间戳的目录。目录中的 `manifest.json` 会记录原文件绝对
-路径与备份副本的对应关系。恢复时，把相应备份副本复制回原路径即可。
-
-持久化缓存会保存源 URL、图片 SHA-256、目标 URL、平台命名空间和过期时间，不会
-保存 API key。
-
-### Python 支持的图片语法
-
-```markdown
-![说明文字](https://example.com/image.png)
-![](https://example.com/image-without-alt.png)
-
-<img src="https://example.com/image.jpg" alt="示例">
-<img src=https://example.com/unquoted-image.jpg alt="示例">
-
-![说明文字][image-id]
-[image-id]: https://example.com/image.webp
-```
-
-`.txt` 文件中的裸 URL 也会作为候选：
-
-```text
-https://example.com/a
-```
-
-同一行裸 URL 位于 `.md` 或 `.markdown` 文件时会忽略。
-
-普通链接（例如 `[网站](https://example.com/)`）即使位于 `.txt` 文件中，也不会被当作
-图片处理。Obsidian 本地附件嵌入（例如 `![[image.png]]`）同样不会处理；Obsidian
-外链图片使用 `![](URL)` 这样的 Markdown 图片语法。
-
-### Python 安全处理流程
-
-完整迁移过程如下：
-
-1. 扫描 Markdown，记录可以替换的图片 URL。
-2. 下载第一条唯一来源 URL，并限制在 32 MB 以内；不检查下载内容是否符合图片特征。
-3. 如果本地存在所选平台仍然有效的缓存链接，则直接复用；否则上传图片。
-4. 图片上传完成后，立即处理所有引用该 URL 的 Markdown 文件：
-   - 如果启用了备份，并且该文件在本次任务中尚未备份，先备份一次原文件。
-   - 确认文件从扫描或上一次程序写入后没有被其他程序修改。
-   - 使用原子写入立即替换该图片 URL。
-5. 确认写入结束后，才开始下载和上传下一张图片。
-6. 重复以上步骤，直到任务完成或取消。
-
-同一文件在一次任务中最多备份一次，备份内容是该文件开始迁移前的状态。正常取消时，
-已经上传成功的图片链接已经写入，尚未处理的图片保留原链接。
-
-上传响应返回与本地原子写入之间仍存在极短的程序执行间隔。如果进程在该间隔内被系统
-强制终止，所选上传平台中可能会暂时留下一张尚未写入 Markdown 的图片；再次运行时
-会复用该平台自己的本地缓存并完成替换。
-
-### Python 的上传自动删除时间
-
-默认值为 `0`，表示请求永久保存。如果希望上传内容自动删除，可以设置
-60 到 15,552,000 秒：
-
-```bash
-python3 img_link_migrator.py \
-  --apply \
-  --expiration 600 \
-  "$HOME/Documents/MyVault"
-```
-
-已经过期的缓存记录不会被复用。临时图片缓存也不会用于需要永久保存的迁移任务。
-
-ImgBB 直接接收秒数；PicGo.net 接收等价的 ISO 8601 时间段，例如 `PT600S`。
-
-### Python 开发与测试
-
-运行测试：
-
-```bash
-python3 -m unittest discover -s tests -v
-```
-
-检查 Python 语法：
-
-```bash
-python3 -m py_compile img_link_migrator.py
-```
-
-测试使用模拟的 ImgBB 和 PicGo.net 响应，不会实际上传。
-
-### Python 程序限制
-
-- Python GUI/CLI 读取 UTF-8 编码的 `.txt`、`.md` 和 `.markdown` 文件。只有 `.txt`
-  会额外识别裸 HTTP(S) URL；其他扩展名要求使用图片语法。
-- 需要浏览器登录状态才能访问的源图片可能无法下载。对于小红书 CDN，程序会自动把
-  小红书网站设置为 HTTP Referer，这可以处理许多公开图片链接。
-- URL 解析主要支持 Obsidian 和 Markdown 的常见图片语法。自定义插件生成的非标准
-  语法可能无法识别。
-- Python 程序不会删除任何上传平台中的图片。
-
-## macOS 独立单文件工具
-
-`img-link-migrator.command` 是所有程序逻辑都包含在一个文件中的完整 zsh 程序。
-可以把它复制或剪切到仓库之外独立运行；运行时不会读取或启动
-`img_link_migrator.py`。
-
-### 单文件工具的处理范围
-
-- 接受一个 `.txt`、`.md` 或 `.markdown` 文件，或者一个文件夹；三种扩展名都识别图片语法，只有 `.txt` 额外识别裸 URL。
-- 递归搜索文件夹，同时跳过隐藏文件和隐藏目录。
-- 直接扫描文件字节，不检测或转换文本编码。
-- 所有支持文件都扫描 Markdown 图片语法；裸 HTTP(S) URL 只在 `.txt` 文件中识别。
-- 按来源域名筛选 URL；默认域名是 `xhscdn.com` 及其全部子域名。
-- 初次扫描时建立 URL 到文件的索引；上传完成后只检查原本包含该 URL 的文件。
-- 同时缓存来源 URL 和下载图片的 SHA-256；已知的相同图片会直接复用目标 URL，
-  不再发起上传请求。
-- 可以上传到 ImgBB 或 PicGo.net。
-- PicGo.net 的 `Duplicated upload` 响应只要包含有效图片 URL，就按成功复用处理。
-- 排除属于当前所选目标平台的现有链接。
-- 下载每个选中的 URL；拒绝空响应或超过 32 MB 的内容，不根据下载内容特征验证图片类型。
-- 每次下载和上传最多尝试四次，等待时间自动逐步延长。
-- 两个平台的上传请求（包括重试）都限制为每分钟不超过 50 次；遇到限速响应时，
-  全部上传统一暂停 60 秒。
-- 内部自动重叠最多 3 个下载任务，避免等待来源服务器时浪费上传名额；上传请求仍
-  共用一个时间表，程序不再询问 worker 数量。
-- 使用该单文件工具自己的持久化来源 URL 缓存。
-- 任一任务上传成功后，由主进程串行处理文件，并通过原子写入立即替换索引中的全部
-  相同 URL。
-
-单文件工具在 `.txt`、`.md` 和 `.markdown` 中识别 Markdown 行内图片
-（`![说明](URL)` 和 `![](URL)`）、已使用的完整引用式图片，以及 HTML
-`<img src="URL">`。只有 `.txt` 文件还会识别所有符合所选来源域名的裸 HTTP(S) URL，
-不要求图片扩展名。普通 Markdown 链接、HTML `href` 和尖括号自动链接不会按裸 URL
-处理。程序跳过 YAML frontmatter、围栏代码块和行内代码；下载后不根据内容特征判断
-链接是否为图片。
-
-### 单文件工具要求
-
-- macOS
-- ImgBB 或 PicGo.net API key
-- macOS 系统自带的 `zsh`、`curl`、`plutil`、`Perl` 及相关命令行工具
-
-### 运行单文件工具
-
-双击 `img-link-migrator.command`，或者在终端运行：
-
-```bash
-./img-link-migrator.command
-```
-
-程序只会要求填写以下内容：
-
-1. 保留默认的 ImgBB，或者改选 PicGo.net。
-2. 输入所选平台的 API key。本次运行中的输入内容会被隐藏。
-3. 每次把一个支持的文件或文件夹拖入终端并按回车；重复添加其他目标，最后在空提示处按回车结束。
-4. 选择来源域名。
-5. 扫描结果会按序号列出图片来源域名。输入 `N` 可查看第 N 个域名下的全部候选 URL。查看后按回车或输入 `b` 返回域名列表，输入 `x` 跳过当前域名；在列表输入 `x N`（例如 `x 2`）可跳过第 N 个域名，输入 `i N`（例如 `i 2`）可重新包含它。按回车结束选择后，再输入 `y` 开始迁移。
-
-上传平台提示如下：
-
-```text
-Choose the upload service:
-  Press Return or type 1 for ImgBB.
-  Type 2 for PicGo.net API v1.
-Your choice [1]:
-```
-
-| 输入 | 上传目标 |
+| 安装包 | 适用设备 |
 | --- | --- |
-| 直接按回车、`1` 或 `imgbb` | ImgBB |
-| `2`、`picgo` 或 `picgo.net` | PicGo.net |
+| `IMG-Link-Migrator-1.0.0-arm64.zip` | Apple Silicon，M1 及后续芯片 |
+| `IMG-Link-Migrator-1.0.0-x86_64.zip` | Intel Mac |
 
-选择 PicGo.net 时，程序使用 `X-API-Key` 请求头，把图片作为 `source` multipart
-字段发送到 `/api/1/upload`。
+解压后，将 `IMG Link Migrator.app` 拖进「应用程序」。不发布 Universal 包；每个包仅含对应架构。没有提供 Developer ID 时，本地构建使用临时签名，未经 Apple 公证。下载后 macOS 可能要求在「隐私与安全性」中明确允许打开；公开发行的签名、公证方法见下文。
 
-程序显示的来源说明如下：
+## 使用
 
-```text
-Choose where the original image links come from:
-  Press Return to use xhscdn.com and its subdomains.
-  Or type domains separated by commas: xhscdn.com,example.com
-  Or type * to check every domain; bare URLs are included only from .txt.
-Your choice [xhscdn.com]:
-```
+1. 添加单个或多个 `.txt`、`.md`、`.markdown` 文件，或递归扫描的文件夹，也可拖放。
+2. 选择 **ImgBB**、**PicGo.net** 或 **Custom PicGo API**，填写对应 API key。
+3. 选择图片模式和高级选项。默认 **Size Limit**，并开启文档备份。
+4. 点击 **Scan**。扫描只读取文档，不下载、不上传、不修改文件。查看文档、图片链接、数量及来源域名，取消勾选不处理的域名。
+5. 点击 **Start Migration**。确认窗口 **Enter 同意、Escape 取消**，无需输入 y/n，也不会超时自动同意。
+6. 查看每张图片的状态、输出格式、大小、尺寸、质量，重试失败项目或导出 JSON 报告。
 
-| 在 `Your choice` 中输入 | 会考虑迁移哪些 URL |
+继续识别行内 Markdown 图片、被图片引用使用的引用式定义、HTML `<img>`。只有 `.txt` 识别裸图片 URL。跳过 frontmatter、围栏代码块及行内代码，保留链接文字和文档结构。
+
+## 全部选项
+
+| 选项 | 默认值／行为 |
 | --- | --- |
-| 不输入内容，直接按回车 | `xhscdn.com` 及其全部子域名中的 URL。 |
-| `example.com` | `example.com` 及其全部子域名中的 URL。 |
-| `xhscdn.com,example.com` | 两个所列域名及其子域名中的 URL。 |
-| `*` | 所有域名中符合图片语法的 URL，以及 `.txt` 文件中的裸 URL。 |
+| Upload to | ImgBB；另支持 PicGo.net、自定义 HTTPS 兼容 API |
+| API key | 空；仅保存在当前应用会话内存 |
+| Custom service URL | `https://www.picgo.net`；只用于自定义平台 |
+| Custom upload limit | 25 MB；可设置 1–100 MB |
+| Image mode | Size Limit |
+| Back up documents | 开启 |
+| Include domains | 空，即全部符合条件的域名；逗号分隔 |
+| Exclude domains | `xhscdn`；逗号分隔；自动排除目标图床域名 |
+| Source domain selection | 默认勾选扫描出的所有域名，可取消勾选 |
+| Show URLs | 开启；关闭时显示域名 |
+| Delete after (seconds) | 0 永不删除；否则 60–15,552,000 秒，需平台支持 |
+| Automatic retries | 3；可设置 0–10 |
+| State directory | `~/Library/Application Support/IMG Link Migrator` |
+| Automatic JSON report | 空；可设置自动导出的文件路径 |
+| Export Report | 任务结束后导出本次报告 |
+| Retry Failed | 重试当前域名选择中的失败图片 |
+| Stop | 不再开始新图片，当前操作到安全位置后结束 |
 
-程序不再询问 worker 数量。内部会自动重叠最多 3 个下载任务，但所有 worker 共用
-同一个上传时间表。PicGo.net 和 ImgBB 的上传请求开始时间至少间隔 1.21 秒，使速度
-保持在每分钟 50 次以下；重试也使用同一时间表。如果收到限速响应，全部上传 worker
-会暂停 60 秒，随后自动继续重试。
+API key 留空时，读取应用环境中的 `IMGBB_API_KEY`、`PICGO_API_KEY` 或旧版 `CHEVERETO_API_KEY`。Finder 启动的应用不会自动继承 Terminal 的 shell 环境变量。Key 不写入设置、缓存、备份、日志或报告。
 
-单文件工具不建立备份。扫描结束后会按序号列出来源域名和链接数量。输入 `N` 查看第 N 个
-域名下的全部候选 URL。查看后按回车或输入 `b` 返回域名列表，输入 `x` 跳过当前域名；在列表
-输入 `x N`（例如 `x 2`）可跳过第 N 个域名，输入 `i N`（例如 `i 2`）可重新包含。按回车结束选择后，输入 `y` 或 `yes`
-才会开始处理。失败时会在结束摘要下列出所有失败 URL。
+## 图片处理规则
 
-在交互式终端中，迁移进度会固定更新在同一行，显示完成数量、上传数、缓存复用数、失败数
-和正在处理的任务数。失败详情仍单独显示，方便查找。
+**Size Limit，默认模式：**每张上传图片严格小于 **1,000,000 字节**。**Original Upload，原图上传模式：**格式支持且未超平台上限时直接使用原文件；超过上限或格式不支持时进入相同处理流程，目标大小改为平台上限。
 
-### 单文件工具的替换安全
+格式支持且大小达标时不重复编码。需要处理时：
 
-单文件工具不建立备份副本。每次文件更新都会先写入同一目录中的临时文件，再通过
-原子重命名安装：
+1. 尝试无损 AVIF；普通 8 位图片另尝试无损 WebP，选择达标结果中较小的。
+2. 无损不达标，当前尺寸尝试 AVIF **质量 80 → 70**。
+3. 两次均超限，当前宽高各缩小 **15%**，新尺寸重新尝试 **80 → 70**。
+4. 重复，直到达标或触及终止条件。每个候选结果都从同一份原始解码数据按所需累计比例生成，避免反复压缩上一轮有损结果。
 
-1. 源图片必须成功下载并上传，才会进入替换步骤。
-2. 文件必须仍与扫描时记录的版本一致。
-3. 完整的替换结果必须成功写入临时文件。
-4. 满足以上条件后，才会通过原子操作替换原路径。
+最多尝试 32 个尺寸级别，或较短边达到 16 像素后停止。无效、不支持、失败或仍超限的图片保留原链接，不上传。原图下载上限单独设为 100,000,000 字节；需要处理时最多 1 亿像素。大小限制针对图片编码后的文件，不包含上传表单的开销。
 
-任何一步失败时，本次替换都不会覆盖该文件；此前已经成功完成的替换会保留在磁盘上。
-所有文件修改都由主进程逐个执行，因此并行传输任务不会同时写入同一个文件。
+不额外旋转、翻转、校正方向或预先调整尺寸。HEIF 解码器会应用格式规定的显示变换；编解码器保留可映射的方向信息。可识别的原图采样优先沿用：有损 4:2:0 保留 4:2:0；因内置编码器只提供 4:2:0／4:4:4，4:2:2 用 4:4:4 表示。无损 AVIF 按要求使用 RGB identity 和 4:4:4；未知采样使用编码器默认值。传递受支持的 ICC／CICP 色彩信息及透明通道，10／12 位 AVIF 保持原位深。不能保留的位深或色彩空间直接报错。这里的无损指解码后像素的无损编码，不能恢复 JPEG／HEIC 之前已丢失的信息，也不承诺保留所有容器辅助数据。不单独做逐像素一致性验证。
 
-第一次按下 `Control-C` 后，程序会停止派发新任务，等待当前任务组完成，并把
-其中成功的结果全部原子写入后再退出。根据自动重试和网络超时情况，安全结束可能需要
-等待一段时间。
+动画／多图片文件支持且大小达标时直接使用。不会自动变成静态图；需要逐帧压缩的文件报告为不支持。
 
-单文件工具的缓存目录是
-`~/Library/Application Support/IMG Link Migrator Standalone/`。`url-map.tsv` 保存
-来源 URL 到目标 URL 的对应关系；`content-map.tsv` 保存平台命名空间、SHA-256 和
-目标 URL。两个文件都不包含 API key。移动 `.command` 文件不会影响这些缓存。
+## 图床格式和大小
 
-### 单文件工具示例
+| 平台 | 应用可直接上传的原图格式 | 文件上限 |
+| --- | --- | --- |
+| ImgBB | JPEG、PNG、BMP、GIF、WebP、AVIF、HEIC／HEIF、TIFF；可解码的 SVG、JPEG 2000、JXL、ICO、PSD | 32,000,000 字节 |
+| PicGo.net | JPEG、PNG、BMP、GIF、WebP、AVIF | 25,000,000 字节 |
+| 自定义 PicGo API | 沿用 PicGo.net 图片策略，服务需支持 AVIF／WebP | 可配置 |
 
-以下 Markdown 图片语法可以位于 `.txt`、`.md` 或 `.markdown` 文件中：
+原图也必须被内置解码器识别。本应用处理图片，不处理 PDF、PostScript 或视频。ImgBB 上传器公布的接受列表比应用实际可解码的格式更广。平台可能变更接受规则或在上传后转换图片。来源：[ImgBB 上传页](https://imgbb.com/)、[ImgBB API](https://api.imgbb.com/)、[PicGo.net 上传页](https://www.picgo.net/)。
 
-```text
-图片
-------------------------
-1. ![](https://sns-webpic-qc.xhscdn.com/path/to/image)
+## 完整流程图
+
+```mermaid
+flowchart TD
+    A[打开应用；添加文件并选择选项] --> B[扫描链接；不下载、不写入]
+    B --> C[检查文件、链接和来源域名]
+    C --> D{开始迁移？}
+    D -- Escape／取消 --> C
+    D -- Enter／同意 --> E{有符合当前规则的缓存？}
+    E -- 有 --> N[取得已有上传链接]
+    E -- 无 --> F[下载原图；识别真实格式]
+    F --> G{格式支持且大小达标？}
+    G -- 是 --> K[使用原文件]
+    G -- 否 --> H[尝试无损 AVIF 和适用的 WebP]
+    H --> I{无损结果达标？}
+    I -- 是 --> K
+    I -- 否 --> J[当前尺寸 AVIF 质量 80]
+    J --> J1{达标？}
+    J1 -- 是 --> K
+    J1 -- 否 --> J2[尝试质量 70]
+    J2 --> J3{达标？}
+    J3 -- 是 --> K
+    J3 -- 否 --> J4{还能继续缩小？}
+    J4 -- 是 --> J5[当前宽高缩小 15%]
+    J5 --> J
+    J4 -- 否 --> X[记录失败；保留原链接]
+    F -. 无效／不支持 .-> X
+    K --> L{处理后相同内容已缓存？}
+    L -- 是 --> N
+    L -- 否 --> M[限速上传；自动重试]
+    M --> M1{上传成功？}
+    M1 -- 否 --> X
+    M1 -- 是 --> N
+    N --> O{文档自扫描／上次写入后未被外部修改？}
+    O -- 否 --> X
+    O -- 是 --> P[按设置备份；原子替换链接；记录缓存]
+    P --> Q{还有图片且未停止？}
+    X --> Q
+    Q -- 是 --> E
+    Q -- 否 --> R[汇总；导出报告或重试失败]
+    R --> S[释放临时图片缓冲]
 ```
 
-如果来源域名符合所选规则，`.txt` 文件中的裸 URL 也会识别：
+## 缓存、重试、文件安全和清理
 
-```text
-https://sns-webpic-qc.xhscdn.com/path/to/image
+- URL 缓存及处理后内容去重按平台／API 地址、模式、大小上限和规则版本隔离，原图模式的链接不能绕过 1 MB 限制。临时图片缓存需仍在有效期内才能复用。
+- 上传和重试共享每分钟最多 50 次的限速器。平台限流时暂停后重试，网络及服务器失败采用有次数上限的退避。
+- 成功上传或有符合条件的缓存后才替换链接。扫描或上次成功写入后被外部修改的文档不会被覆盖；已上传结果保存在缓存／报告中。
+- 开启备份时，每次任务首次修改文档前在状态目录保存备份，写入采用临时文件及原子替换。
+- 停止或退出时等待安全位置，保留已完成结果。修改输入、平台、地址或域名筛选后需要重新扫描。
+- 图片在内存中处理，随处理进度释放临时缓冲，不持久化图片下载目录。URL／内容映射、备份及导出报告保留，需用户自行删除。
+
+## 源码构建
+
+需要 macOS、Xcode Command Line Tools（`xcode-select --install`）、开发用 Python 3.11 或更新版本以及网络。Apple Silicon 构建 Intel 包需要 Rosetta 2。Intel Mac 可构建 Intel 包；arm64 包使用 Apple Silicon Mac 构建。
+
+```sh
+python3 scripts/build_app.py --arch arm64
+python3 scripts/build_app.py --arch x86_64
+# 在 Apple Silicon 上构建两个包：
+python3 scripts/build_app.py --arch all
 ```
 
-同一个裸 URL 如果位于 `.md` 或 `.markdown` 文件中，除非改写为以上图片语法，否则会忽略。
+构建器在被 Git 忽略的 `build/` 下载锁定版本、经过 SHA-256 校验的独立 Python，建立对应架构环境，使用 PyInstaller 打包 pyvips／libvips，编译 SwiftUI，最终在 `dist/` 生成独立架构 ZIP。不安装到系统 Python。Python 模块仅为应用内部组件，不保留用户 CLI、Tk GUI、`.command` 入口。
 
-上传成功后，只会改变 URL：
+公开发行可提供 Developer ID 签名身份，以及已配置的 notarytool Keychain profile：
 
-```text
-图片
-------------------------
-1. ![](https://i.ibb.co/example/image.webp)
+```sh
+python3 scripts/build_app.py --arch arm64 --sign 'Developer ID Application: Your Name (TEAMID)' --notary-profile your-profile
 ```
 
-### 单文件工具开发检查
+构建器签名内置可执行文件，对 ZIP 公证，给应用附加公证票据后重新生成 ZIP。凭据保存在 Keychain。省略参数即为本地临时签名包。
 
-离线自检使用临时 `.txt`、`.md` 和 `.markdown` 文件，其中包含一个不符合 UTF-8
-编码的文件。它会在不发起网络请求的情况下验证内部 3 个 worker 队列、内容哈希
-复用、重复响应复用、共享上传节流与冷却、安全中断、缓存续传、索引替换和原子写入：
+只保留已有核心检查及少量处理策略验证：
 
-```bash
-zsh -n img-link-migrator.command
-./img-link-migrator.command --self-test
+```sh
+build/venv-arm64/bin/python -m unittest discover -s tests
 ```
 
-## 许可证
-
-本项目采用 [GNU Affero General Public License v3.0](LICENSE)。
+组件许可随应用保存在 `Contents/Resources/Licenses`。版本、源码及替换重建方法见 [THIRD_PARTY.md](THIRD_PARTY.md)。项目许可：[MIT](LICENSE)。

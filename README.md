@@ -1,718 +1,159 @@
 # IMG Link Migrator
 
-**English** | [简体中文](README_CN.md)
+[中文说明](README_CN.md)
 
-This repository contains two independent image-link migration programs:
+A native macOS app that optimizes externally linked images, uploads them to ImgBB or a PicGo-compatible service, and replaces the links in Markdown and text documents. The app bundles its Python runtime and image codecs; users do not need Python, Homebrew, or plugins.
 
-1. A Python Markdown GUI/CLI in `img_link_migrator.py`.
-2. A self-contained macOS program in `img-link-migrator.command` for Markdown
-   image syntax in `.txt`, `.md`, and `.markdown` files, plus bare URLs in
-   `.txt` files only.
+## Install
 
-Each program has its own runtime, scanning rules, prompts, cache, and safety
-behavior. The documentation for one program does not apply to the other.
-Both programs support these upload destinations:
+Requires macOS 13 or later. Choose the **single-architecture** download for your Mac:
 
-- [ImgBB API v1](https://api.imgbb.com/1/upload)
-- [PicGo.net API v1.1](https://www.picgo.net/api-v1/?lang=en)
-
-## Link detection rules
-
-Both programs apply these rules to `.txt`, `.md`, and `.markdown` files:
-
-| File extension | Markdown inline images, used reference images, and HTML `<img src>` | Bare HTTP(S) URLs |
-| --- | --- | --- |
-| `.txt` | Recognized | Recognized |
-| `.md`, `.markdown` | Recognized | Not recognized |
-
-Bare HTTP(S) URLs are recognized **if and only if the file extension is
-`.txt`**. For example, a line containing only `https://images.example.com/a`
-is a candidate in `notes.txt`, but not in `notes.md` or `notes.markdown`.
-In `.txt` files, every bare HTTP(S) URL under the selected source domains is a
-candidate; there is no filename-extension check. The scanner does not inspect
-downloaded content to decide whether a candidate is an image.
-
-The Markdown image syntax recognized in all three extensions is:
-
-- Inline images such as `![alt](https://example.com/a.png)` and `![](URL)`.
-- Used full reference images, such as `![alt][photo]` with a matching
-  `[photo]: URL` definition. Unused definitions are ignored.
-- HTML `<img>` elements whose `src` value is an HTTP(S) URL, quoted or
-  unquoted.
-
-The `.txt` bare-URL rule does not turn ordinary Markdown links such as
-`[website](URL)`, HTML links such as `<a href="URL">`, or angle-bracket URL
-autolinks such as `<URL>` into image candidates. Obsidian's local embed syntax
-`![[image.png]]` is also not an external URL and is left unchanged. YAML
-frontmatter, fenced code blocks, and inline code are skipped by both scanners.
-
-Candidates must match the selected source-host rules; host rules include the
-specified domain and its subdomains. Links belonging to the selected upload
-destination are excluded. Python treats an empty host filter as all external
-hosts; the standalone program defaults to `xhscdn.com` and its subdomains and
-also offers `*` for all hosts. The Python CLI/GUI and standalone startup screen
-state that bare HTTP(S) URLs are recognized if and only if the file is `.txt`.
-
-## Python Markdown GUI/CLI
-
-The Python program is designed for Obsidian vaults and other UTF-8 text files.
-It recognizes common Markdown image syntax in all supported extensions and
-also recognizes bare HTTP(S) URLs in `.txt` files only.
-
-### Python upload providers
-
-| `--provider` value | Destination | API key environment variable | API base URL |
-| --- | --- | --- | --- |
-| `picgo` | PicGo.net or another API-compatible server | `PICGO_API_KEY` | Defaults to `https://www.picgo.net`; the CLI can change it with `--picgo-url`. |
-| `imgbb` (default) | ImgBB | `IMGBB_API_KEY` | Fixed ImgBB API v1 endpoint. |
-
-Provider caches are isolated. Switching the destination never reuses a URL or
-content-hash cache entry created for another provider.
-
-Both providers use the same per-run upload-request limit: no more than 50
-requests per minute, with request starts spaced 1.21 seconds apart. Automatic
-upload retries pass through the same limiter and therefore count toward the
-same limit. If a provider reports flooding, a rate limit, or too many requests,
-all uploads pause for 60 seconds before automatic retry continues. Downloads,
-cache hits, and local file writes do not consume upload slots.
-
-When PicGo.net reports `Duplicated upload` and includes a valid existing image
-URL, both programs reuse that URL as a successful result. The content hash is
-then cached so later source URLs containing the same image bytes skip the
-upload request entirely.
-
-The GUI provides a PicGo.net option. The Python CLI uses the `X-API-Key`
-header and uploads the image in the `source` multipart field to
-`/api/1/upload`. Use `--picgo-url` to set a compatible API endpoint.
-
-### Python features
-
-- Select multiple `.txt`, `.md`, or `.markdown` files and folders in the GUI.
-- Scan safely before making changes.
-- Migrate every external image host or restrict migration to selected domains.
-- Recognize Markdown inline and used reference images, HTML `<img src="URL">`,
-  and bare HTTP(S) URLs in `.txt` files only.
-- Skip YAML frontmatter, fenced code blocks, inline code, hidden folders, and
-  existing links from the selected destination.
-- Download each selected URL and enforce a 32 MB local size limit without
-  checking downloaded bytes for image signatures.
-- Show per-image progress, cache reuse, success, and failure details.
-- Limit both providers to no more than 50 upload requests per minute.
-- Retry automatically, with manual retry available in the GUI.
-- Deduplicate repeated URLs and identical image content.
-- Atomically replace each completed image URL before processing the next image.
-- Optionally back up changed Markdown files.
-- Detect files edited after scanning and avoid overwriting those changes.
-- Keep the API key out of files, reports, backups, and the persistent cache.
-
-### Python requirements
-
-- Python 3.9 or newer
-- An API key for the selected upload provider
-- Tk for the GUI
-
-Homebrew distributes Tk separately from Python. If the GUI reports that no
-working Tk installation is available, find and install the formula matching
-the selected Python interpreter:
-
-```bash
-brew search python-tk
-```
-
-Tk is used only by the GUI.
-
-### Python GUI
-
-On macOS, double-click `launch-gui.command`, or run:
-
-```bash
-python3 img_link_migrator.py --gui
-```
-
-Then:
-
-1. Use **Add files** to multi-select `.txt`, `.md`, or `.markdown` files and
-   **Add folder** to add one or more folders. Remove selected targets as needed.
-2. Keep the default **ImgBB** provider or select **PicGo.net**.
-3. Paste that provider's API key. It is kept in memory for the current run.
-4. Optionally enter one or more source domains, separated by commas.
-5. Choose whether changed files should be backed up.
-6. Click **Scan** to preview the detected links.
-7. Review the numbered source-domain list. Enter a number and click **Show
-   candidate URLs** to inspect it. The link window has **Return to domains**,
-   **Skip this domain**, and **Include this domain** actions; the main window also
-   has skip/include controls. Click **Start migration** and confirm.
-8. If any item fails, click **Retry failed**.
-
-The domain field can be left empty to migrate images from every external host.
-Domains belonging to the selected destination are excluded.
-
-### Python CLI
-
-CLI commands must be run from the project directory, where
-`img_link_migrator.py` is located.
-
-#### Where to enter the API key
-
-In `img_link_migrator.py`, fill `HARDCODED_IMGBB_API_KEY` and/or
-`HARDCODED_PICGO_API_KEY` to configure separate defaults for the CLI and GUI.
-The GUI loads the matching key when switching providers; an edited field or
-CLI `--api-key` overrides it. Empty defaults fall back to the provider environment
-variable, then manual entry. The standalone `img-link-migrator.command` has the
-same two constants; fill them separately to skip its key prompt for that provider.
-
-- **GUI:** select the provider, then paste its key into the API-key field.
-- **CLI:** use the environment variable matching `--provider`.
-
-| Provider | CLI selector | Environment variable |
-| --- | --- | --- |
-| PicGo.net | `--provider picgo` | `PICGO_API_KEY` |
-| ImgBB | `--provider imgbb` or omit `--provider` | `IMGBB_API_KEY` |
-
-The command used to set a variable depends on the current shell. Run
-`echo $SHELL`, then use only the matching group below and only the line for the
-selected provider.
-
-##### fish
-
-A prompt resembling `directory (main)>`, together with an error mentioning
-`See help identifiers`, usually indicates fish.
-
-1. Copy the selected provider's API key.
-2. Run the input command below.
-3. When Terminal displays `API key:`, paste the key and press Return. fish may
-   display `*` characters to mask the input.
-
-```fish
-# ImgBB
-read --silent --global --export --prompt-str 'API key: ' IMGBB_API_KEY
-
-# PicGo.net
-read --silent --global --export --prompt-str 'API key: ' PICGO_API_KEY
-```
-
-Confirm the selected variable without displaying its value:
-
-```fish
-set --query IMGBB_API_KEY; and echo 'API key is set'; or echo 'API key is not set'
-set --query PICGO_API_KEY; and echo 'API key is set'; or echo 'API key is not set'
-```
-
-Clear it after use:
-
-```fish
-set --erase --global IMGBB_API_KEY
-set --erase --global PICGO_API_KEY
-```
-
-##### zsh
-
-```zsh
-# ImgBB
-read -s "IMGBB_API_KEY?API key: "; echo
-export IMGBB_API_KEY
-
-# PicGo.net
-read -s "PICGO_API_KEY?API key: "; echo
-export PICGO_API_KEY
-```
-
-Confirm that it is set:
-
-```zsh
-# Run only the line for the selected provider.
-[[ -n "${IMGBB_API_KEY:-}" ]] && echo "API key is set" || echo "API key is not set"
-[[ -n "${PICGO_API_KEY:-}" ]] && echo "API key is set" || echo "API key is not set"
-```
-
-Clear it after use:
-
-```zsh
-unset IMGBB_API_KEY
-unset PICGO_API_KEY
-```
-
-##### bash
-
-```bash
-# ImgBB
-IFS= read -r -s -p "API key: " IMGBB_API_KEY; echo
-export IMGBB_API_KEY
-
-# PicGo.net
-IFS= read -r -s -p "API key: " PICGO_API_KEY; echo
-export PICGO_API_KEY
-```
-
-Confirm that it is set:
-
-```bash
-# Run only the line for the selected provider.
-[[ -n "${IMGBB_API_KEY:-}" ]] && echo "API key is set" || echo "API key is not set"
-[[ -n "${PICGO_API_KEY:-}" ]] && echo "API key is set" || echo "API key is not set"
-```
-
-Clear it after use:
-
-```bash
-unset IMGBB_API_KEY
-unset PICGO_API_KEY
-```
-
-Migration commands in this terminal session now read the selected provider's
-key automatically. The variable expires when the terminal session closes.
-
-The key is needed only for `--apply`. Scanning and opening the GUI do not
-require it to be set in advance.
-
-Passing `--api-key` directly also works, but its value may be stored in shell
-history or process listings. Example using PicGo.net:
-
-```bash
-python3 img_link_migrator.py \
-  --apply \
-  --provider picgo \
-  --api-key "YOUR_PICGO_API_KEY" \
-  "$HOME/Documents/MyVault"
-```
-
-#### What the target path means
-
-The target can be one or more `.txt`, `.md`, or `.markdown` files and
-directories to scan:
-
-- `./note.md` means `note.md` in the current directory.
-- `./notes` means a child directory named `notes`. It is only an example.
-- `"$HOME/Documents/MyVault"` is an example vault under the current user's
-  documents directory.
-
-Quote paths containing spaces or non-ASCII characters. Pass multiple targets as
-separate arguments. On macOS, drag targets from Finder into Terminal to insert
-their paths.
-
-#### Common workflow
-
-Replace `"$HOME/Documents/MyVault"` below with the actual file or directory.
-
-First, scan without downloading, uploading, or changing files:
-
-```bash
-python3 img_link_migrator.py "$HOME/Documents/MyVault"
-```
-
-The scan prints numbered source domains and URL counts instead of dumping every
-candidate link. In an interactive terminal, enter `N` to inspect all links for
-domain N. After inspection, press Return or enter `b` to return to the domain
-list, or enter `x` to skip that domain. At the domain list, `x N` skips a domain
-and `i N` includes it again; press Return to continue.
-
-During migration, the interactive CLI updates one progress line in place. The
-GUI keeps progress in its per-image status table.
-
-Then apply the migration after checking the scan output:
-
-```bash
-python3 img_link_migrator.py --apply "$HOME/Documents/MyVault"
-```
-
-That command uses ImgBB and reads `IMGBB_API_KEY` when no hardcoded key is set.
-To use PicGo.net instead, set `PICGO_API_KEY` and select PicGo.net explicitly:
-
-```bash
-python3 img_link_migrator.py \
-  --apply \
-  --provider picgo \
-  "$HOME/Documents/MyVault"
-```
-
-To filter by source domain, add `--include-host`. The Xiaohongshu CDN below is
-only an example; any other image domain can be used:
-
-```bash
-python3 img_link_migrator.py \
-  --apply \
-  --include-host xhscdn.com \
-  "$HOME/Documents/MyVault"
-```
-
-Run without backups:
-
-```bash
-python3 img_link_migrator.py --apply --no-backup "$HOME/Documents/MyVault"
-```
-
-Create a machine-readable result report:
-
-```bash
-python3 img_link_migrator.py \
-  --apply \
-  --report report.json \
-  "$HOME/Documents/MyVault"
-```
-
-#### CLI modes and arguments
-
-The three command forms are:
-
-```text
-GUI:           python3 img_link_migrator.py --gui
-Scan example:  python3 img_link_migrator.py "$HOME/Documents/MyVault"
-Apply example: python3 img_link_migrator.py --apply "$HOME/Documents/MyVault"
-```
-
-Notation used in command references:
-
-| Notation | Meaning |
-|---|---|
-| `[value]` | Optional. Do not type the square brackets. |
-| `<value>` | Replace it with a real value. Do not type the angle brackets. |
-| `...` | The previous value can be repeated. Do not type the dots. |
-| Uppercase word | Replace it with a value, such as a key, number, domain, or path. |
-
-| Mode | Network requests | File changes | Use case |
-|---|---:|---:|---|
-| A target without `--apply` | No | No | Scan and print numbered source domains; inspect URLs by domain number. |
-| `--apply` | Yes | Yes, for successful uploads | Run the migration from the terminal. |
-| `--gui` | Only after starting a migration | Only after confirmation | Open the desktop interface and choose the target there. |
-
-`--gui` and `--apply` are mutually exclusive.
-
-“Default” describes what happens when an argument is omitted. A “flag” takes
-no value: writing the flag enables its behavior.
-
-| Argument | What to enter | When omitted | Purpose and example |
-|---|---|---|---|
-| Target path | One or more `.txt`, `.md`, or `.markdown` files or directories; do not type the word `targets`. | Scan/apply requires a target; running with no arguments opens the GUI. | `"$HOME/Documents/MyVault"` or `"note.md"` |
-| `--gui` | Flag; enter no value after it. | Use CLI behavior. | `python3 img_link_migrator.py --gui` |
-| `--apply` | Flag; enter no value after it. | Scan only. | `python3 img_link_migrator.py --apply "$HOME/Documents/MyVault"` |
-| `--yes` | Flag; enter no value after it. | `--apply` scans and shows domains, then asks for confirmation. | Confirm without a prompt: `python3 img_link_migrator.py --apply --yes "$HOME/Documents/MyVault"`. |
-| `--provider NAME` | Use `imgbb` or `picgo`. | `imgbb`, using ImgBB | `--provider picgo` selects PicGo.net. |
-| `--picgo-url URL` | PicGo API base URL. | `https://www.picgo.net` | For another compatible endpoint: `--provider picgo --picgo-url "https://images.example.com"`. |
-| `--api-key KEY` | Replace `KEY` with the selected provider's API key. | Use the selected provider's hardcoded key, then `IMGBB_API_KEY` or `PICGO_API_KEY`; prompt if missing. | `--api-key "YOUR_KEY"`; the matching environment variable is safer. |
-| `--expiration SECONDS` | Replace `SECONDS` with a number of seconds. | Default `0`, requesting permanent storage. | `60`–`15552000`; PicGo.net receives an equivalent ISO 8601 duration. |
-| `--retries N` | Replace `N` with the retry count. | Default `3`, meaning up to three retries after the first failure. | Range `0`–`10`; `--retries 0` makes one attempt. |
-| `--include-host DOMAIN` | Replace `DOMAIN` with an allowed source domain. | Process every detected external image host. | `--include-host xhscdn.com`; repeat or comma-separate values. |
-| `--exclude-host DOMAIN` | Replace `DOMAIN` with an excluded source domain. | Add no extra exclusions; the selected destination remains excluded. | `--exclude-host example.com`; repeat or comma-separate values. |
-| `--state-dir PATH` | Replace `PATH` with the cache/backup directory. | Use the system app-data directory. | `--state-dir "./migrator-state"` |
-| `--no-backup` | Flag; enter no value after it. | Back up Markdown before changes. | `--apply --no-backup "$HOME/Documents/MyVault"` |
-| `--report PATH` | Replace `PATH` with a JSON report location. | Write no JSON report. | `--report "./report.json"` |
-| `-h`, `--help` | Flag; enter no value after it. | Run normally. | `python3 img_link_migrator.py --help` |
-
-### Python backups and state
-
-Backups are enabled by default and can be disabled:
-
-- GUI: clear **Back up before changes**.
-- CLI: add `--no-backup`.
-
-The app stores its URL/content cache and optional backups outside the selected
-vault:
-
-- macOS: `~/Library/Application Support/IMG Link Migrator/`
-- Windows: `%APPDATA%/IMG Link Migrator/`
-- Linux: `$XDG_STATE_HOME/img-link-migrator/` or
-  `~/.local/state/img-link-migrator/`
-
-Each backup run has a timestamped directory and a `manifest.json` that maps
-every original absolute path to its backup copy. Restoring a file only requires
-copying that backup over the corresponding original path.
-
-The persistent cache contains source URLs, SHA-256 image hashes, destination
-URLs, provider namespaces, and expiration timestamps. It never contains API
-keys.
-
-### Supported image syntax
-
-```markdown
-![alt text](https://example.com/image.png)
-![](https://example.com/image-without-alt.png)
-
-<img src="https://example.com/image.jpg" alt="Example">
-<img src=https://example.com/unquoted-image.jpg alt="Example">
-
-![alt text][image-id]
-[image-id]: https://example.com/image.webp
-```
-
-In a `.txt` file, a bare URL is also a candidate:
-
-```text
-https://example.com/a
-```
-
-That same line is ignored as a bare URL in `.md` and `.markdown` files.
-
-Normal links such as `[website](https://example.com/)` are not treated as
-images, even in `.txt` files. Obsidian's local attachment embeds such as
-`![[image.png]]` are left alone; externally hosted images use Markdown image
-syntax like `![](URL)`.
-
-### Python safety model
-
-The migration pipeline is:
-
-1. Scan Markdown and collect replaceable image URLs.
-2. Download the first unique source URL, enforcing the 32 MB size limit without
-   validating the downloaded content as an image.
-3. Reuse a valid cache entry for the selected provider when possible;
-   otherwise upload the image.
-4. As soon as that image is ready, process every Markdown file referencing it:
-   - If backups are enabled and the file has not yet been backed up in this
-     run, save one copy of its original state.
-   - Verify that no other process has changed the file since the scan or the
-     previous program write.
-   - Atomically replace that image URL immediately.
-5. Start downloading and uploading the next image only after the Markdown
-   write has finished.
-6. Repeat until the task completes or is cancelled.
-
-Each file is backed up at most once per run, before its first migrated link is
-written. A normal cancellation keeps all completed image replacements on disk
-and leaves unprocessed links unchanged.
-
-There is still a very short execution interval between receiving the upload
-response and completing the local atomic write. If the process is forcibly
-terminated during that interval, the selected provider may temporarily contain
-an image not yet referenced by Markdown. The next run reuses the
-provider-specific local cache and completes the replacement.
-
-### Python upload expiration
-
-The default expiration is `0`, which requests permanent storage. To request
-automatic deletion, use a value from 60 through 15,552,000 seconds:
-
-```bash
-python3 img_link_migrator.py \
-  --apply \
-  --expiration 600 \
-  "$HOME/Documents/MyVault"
-```
-
-Expired cache entries are not reused.
-
-ImgBB receives the value as seconds. PicGo.net receives the equivalent ISO
-8601 duration, such as `PT600S`.
-
-### Python development
-
-Run the test suite:
-
-```bash
-python3 -m unittest discover -s tests -v
-```
-
-Run a Python syntax check:
-
-```bash
-python3 -m py_compile img_link_migrator.py
-```
-
-The tests use fake ImgBB and PicGo.net responses and do not perform uploads.
-
-### Python tool limitations
-
-- The Python GUI/CLI reads UTF-8 `.txt`, `.md`, and `.markdown` files. Only
-  `.txt` also recognizes bare HTTP(S) URLs; the other extensions require image
-  syntax.
-- Source images that require an authenticated browser session may fail to
-  download. Xiaohongshu CDN requests automatically include the Xiaohongshu
-  website as the HTTP referrer, which is sufficient for many public links.
-- URL parsing focuses on common Obsidian and Markdown image syntax. Links
-  generated by custom plugins with nonstandard syntax may not be detected.
-- The Python tool does not delete images from any upload provider.
-
-## Standalone single-file tool
-
-`img-link-migrator.command` is a complete zsh program contained in one file.
-It can be copied or moved out of this repository and run independently. At
-runtime it neither reads nor launches `img_link_migrator.py`.
-
-### Standalone scope
-
-- Accept multiple `.txt`, `.md`, or `.markdown` files and directories.
-- Search a directory recursively while skipping hidden files and directories.
-- Scan file bytes directly without testing or converting the text encoding.
-- Scan Markdown image syntax in all supported files and bare HTTP(S) URLs in
-  `.txt` files only.
-- Filter URLs by source domain; the default is `xhscdn.com` and its subdomains.
-- Build a URL-to-files index during the initial scan so a completed upload only
-  checks files that originally contained that URL.
-- Cache both source URLs and downloaded-image SHA-256 hashes. A known identical
-  image reuses its existing destination URL without another upload request.
-- Upload to either ImgBB or PicGo.net.
-- Treat a PicGo.net `Duplicated upload` response containing a valid image URL as
-  successful reuse instead of failure.
-- Exclude existing links belonging to the selected destination.
-- Download each selected URL and reject empty content or files larger than
-  32 MB.
-- Retry each download and upload up to four total attempts with automatic
-  backoff.
-- Limit both providers to no more than 50 upload requests per minute, including
-  retries, and apply a shared 60-second cooldown after a rate-limit response.
-- Internally overlap up to three downloads to avoid wasting upload slots while
-  waiting for source servers. Upload requests still use one shared schedule.
-  There is no worker-count question.
-- Reuse its own persistent source-URL cache.
-- As each transfer succeeds, serialize its file updates and immediately replace
-  indexed image links with atomic file writes.
-
-For `.txt`, `.md`, and `.markdown`, the standalone scanner recognizes inline
-Markdown images (`![Alt](URL)` and `![](URL)`), used full reference images, and
-HTML `<img src="URL">`. It additionally recognizes every bare HTTP(S) URL
-matching the selected source domains in `.txt` files only; it does not require
-an image filename extension. A URL used as a regular Markdown link, HTML
-`href`, or angle-bracket autolink is not treated as a bare URL. It skips YAML
-frontmatter, fenced code blocks, and inline code. It does not inspect
-downloaded bytes to decide whether a candidate is an image.
-
-### Standalone requirements
-
-- macOS
-- An API key for ImgBB or PicGo.net
-- The macOS system `zsh`, `curl`, `plutil`, `Perl`, and related command
-  line tools
-
-### Run the standalone tool
-
-Double-click `img-link-migrator.command`, or run it from Terminal:
-
-```bash
-./img-link-migrator.command
-```
-
-The program asks only for the following information:
-
-1. Keep the default ImgBB service or select PicGo.net.
-2. Enter that service's API key. Typing is hidden for the current run.
-3. Drag one supported file or directory into Terminal and press Return. Repeat
-   for additional targets; submit an empty line when finished.
-4. Choose the source domains.
-5. Review the numbered source domains. Enter `N` to list all its image URLs.
-   After inspection, press Return or enter `b` to return to the domain list, or
-   enter `x` to skip that domain. At the domain list, `x N` skips a domain and
-   `i N` includes it again. Press Return when done, then enter `y` to start
-   migration.
-
-The upload-service prompt is:
-
-```text
-Choose the upload service:
-  Press Return or type 1 for ImgBB.
-  Type 2 for PicGo.net API v1.
-Your choice [1]:
-```
-
-| Input | Upload destination |
+| Download | Mac |
 | --- | --- |
-| Press Return, `1`, or `imgbb` | ImgBB |
-| `2`, `picgo`, or `picgo.net` | PicGo.net |
+| `IMG-Link-Migrator-1.0.0-arm64.zip` | Apple Silicon: M1 and later |
+| `IMG-Link-Migrator-1.0.0-x86_64.zip` | Intel |
 
-For PicGo.net, the tool sends the image as the `source` multipart field to
-`/api/1/upload` with the `X-API-Key` header.
+Unzip and drag `IMG Link Migrator.app` to Applications. No Universal app is distributed. Local builds use an ad-hoc signature unless a Developer ID identity is supplied. They are not notarized; macOS may require an explicit approval in Privacy & Security for a downloaded build. Developer ID signing and notarization instructions are below.
 
-The source explanation displayed by the program is:
+## Use
 
-```text
-Choose where the original image links come from:
-  Press Return to use xhscdn.com and its subdomains.
-  Or type domains separated by commas: xhscdn.com,example.com
-  Or type * to check every domain; bare URLs are included only from .txt.
-Your choice [xhscdn.com]:
-```
+1. Add one or more `.txt`, `.md`, or `.markdown` files, or folders. Folders are searched recursively. Drag and drop also works.
+2. Choose **ImgBB**, **PicGo.net**, or **Custom PicGo API**, and enter the corresponding API key.
+3. Choose an image mode and any advanced options. **Size Limit** and document backups are enabled by default.
+4. Click **Scan**. Scanning only reads documents; it does not download images, upload, or change files. Review the files, image URLs, counts, and source domains, then uncheck domains to skip.
+5. Click **Start Migration**. In confirmation dialogs, **Return accepts** and **Escape cancels**. No `y/n` input or automatic timeout approval is used.
+6. Review each image's status, output format, size, dimensions, and encoding quality. Retry failed items or export the JSON report.
 
-| Input at `Your choice` | URLs considered for migration |
+Images are recognized in inline Markdown, referenced Markdown images whose definitions are used, and HTML `<img>` tags. Bare image URLs are recognized only in `.txt` files. Frontmatter, fenced code blocks, and inline code are skipped. The app preserves existing link text and document structure.
+
+## Options
+
+| Option | Default / behavior |
 | --- | --- |
-| Press Return without typing | URLs from `xhscdn.com` and any of its subdomains. |
-| `example.com` | URLs from `example.com` and its subdomains. |
-| `xhscdn.com,example.com` | URLs from either listed domain and their subdomains. |
-| `*` | Image-syntax URLs from every domain, plus bare URLs in `.txt` files. |
+| Upload to | ImgBB; PicGo.net and custom HTTPS PicGo-compatible API supported |
+| API key | Empty; kept in memory for the app session |
+| Custom service URL | `https://www.picgo.net`; used only for Custom PicGo API |
+| Custom upload limit | 25 MB; adjustable from 1 to 100 MB |
+| Image mode | Size Limit |
+| Back up documents | Enabled |
+| Include domains | Empty: all otherwise eligible domains; comma-separated |
+| Exclude domains | `xhscdn`; comma-separated; destination service domains also excluded |
+| Source domain selection | All scanned domains enabled; uncheck a domain to skip |
+| Show URLs | Enabled; turn off to show host names instead |
+| Delete after (seconds) | 0: never; otherwise 60–15,552,000 seconds, subject to service support |
+| Automatic retries | 3; adjustable from 0 to 10 |
+| State directory | `~/Library/Application Support/IMG Link Migrator` |
+| Automatic JSON report | Empty; optionally choose an output file |
+| Export Report | Save the latest run report after a task finishes |
+| Retry Failed | Retry failed images selected by the current domain filters |
+| Stop | Stop starting new images; finish the current operation at a safe point |
 
-There is no worker-count question. The tool automatically overlaps up to three
-downloads, but all workers share one upload schedule. PicGo.net and ImgBB
-upload request starts are spaced 1.21 seconds apart, keeping the rate below 50
-requests per minute; retries use the same schedule. A rate-limit response
-pauses all upload workers for 60 seconds and then retry continues automatically.
+Blank API keys use `IMGBB_API_KEY`, `PICGO_API_KEY`, or the legacy `CHEVERETO_API_KEY` from the app's environment. Apps launched from Finder do not automatically inherit Terminal shell variables. Keys are never saved in settings, cache, backups, logs, or reports.
 
-There is no backup step. After scanning, the tool lists numbered source domains
-and URL counts. Enter `N` to list all of domain N's candidate URLs. After
-inspection, press Return or enter `b` to return to the domain list, or enter
-`x` to skip that domain. At the domain list, `x N` skips a domain and `i N`
-includes it again. Press Return when done, then enter `y` or `yes` to proceed.
-The completion summary lists every failed URL.
+## Image rules
 
-In an interactive terminal, migration progress stays on one line with completed,
-uploaded, reused, failed, and active-transfer counts. Failure details remain
-separate so they are easy to find.
+**Size Limit (default):** every uploaded image is strictly smaller than **1,000,000 bytes**. **Original Upload:** supported images within the selected service's upload limit are passed through unchanged; oversized or unsupported images enter the same conversion process, using the service limit as their target.
 
-### Standalone replacement safety
+A supported image already within its target limit is not re-encoded. Otherwise:
 
-The standalone tool creates no backup copies. Each individual file update is
-written to a temporary file in the same directory and then installed with an
-atomic rename:
+1. Try lossless AVIF. For ordinary 8-bit images, also try lossless WebP. Choose the smaller acceptable lossless result.
+2. If neither fits, encode AVIF at quality **80**, then **70**, at the original dimensions.
+3. If both are too large, reduce both dimensions by **15%**, then try **80 → 70** again.
+4. Repeat as needed. Every candidate is generated from the original decoded image at the required scale, avoiding repeated lossy encoding of a previous candidate.
 
-1. A source image must download and upload successfully before replacement.
-2. The file must still match the version recorded during the scan.
-3. The complete replacement must be written successfully to the temporary
-   file.
-4. Only then is the original path atomically replaced.
+Compression stops after at most 32 dimension levels or when the smaller dimension reaches 16 pixels. A failed, invalid, unsupported, or still oversized image keeps its original document link and is not uploaded. Download size is separately capped at 100,000,000 bytes; images requiring processing are capped at 100 megapixels. The size limit applies to the encoded image file, before the upload form is assembled.
 
-If any of these steps fails, that replacement does not overwrite the file.
-Replacements completed earlier remain on disk. File updates are performed by
-the parent process one at a time, so concurrent transfers never write the same
-file simultaneously.
+No separate rotation, flip, orientation correction, or preliminary resizing is applied. The HEIF decoder applies format-defined display transforms; mappable orientation metadata is retained by the codecs. Source chroma is used when identifiable: 4:2:0 stays 4:2:0 for lossy output; 4:2:2 is represented as 4:4:4 because the bundled encoder exposes 4:2:0/4:4:4. Lossless AVIF uses RGB identity and 4:4:4 as required. Unknown chroma uses the encoder's default. Supported ICC/CICP color information and alpha are carried through; 10/12-bit inputs stay 10/12-bit in AVIF. Unsupported bit depths/color spaces fail instead of silently becoming ordinary 8-bit images. Lossless encoding describes preservation of the decoded raster, not recovery of information previously lost in JPEG/HEIC or retention of every container-specific auxiliary item. No separate pixel-by-pixel equality check is performed.
 
-Pressing `Control-C` once stops the queue from starting new transfers. The tool
-waits for the active group, writes every successful
-result atomically, and then exits. Depending on retries and network timeouts,
-this graceful stop may take some time.
+Animated or multi-image files can pass through when supported and small enough. They are not flattened to a still image; files needing frame-aware compression are reported as unsupported.
 
-The standalone cache directory is
-`~/Library/Application Support/IMG Link Migrator Standalone/`. `url-map.tsv`
-stores source-to-destination URL mappings; `content-map.tsv` stores provider
-namespaces, SHA-256 hashes, and destination URLs. Neither file contains API
-keys. Moving the `.command` file does not affect these caches.
+## Services and formats
 
-### Standalone example
+| Service | Original image formats used by this app | Upload limit |
+| --- | --- | --- |
+| ImgBB | JPEG, PNG, BMP, GIF, WebP, AVIF, HEIC/HEIF, TIFF; decodable SVG, JPEG 2000, JXL, ICO and PSD | 32,000,000 bytes |
+| PicGo.net | JPEG, PNG, BMP, GIF, WebP, AVIF | 25,000,000 bytes |
+| Custom PicGo API | Same image policy as PicGo.net; service must accept AVIF/WebP | Configurable |
 
-This Markdown image syntax works in all supported files:
+The actual decoder must support the source file. This is an image migration app; PDF, PostScript, and video uploads are not handled. ImgBB lists a broader uploader accept list than the app's supported decoders. Service acceptance can change and uploaded files may be transformed by the service. Sources: [ImgBB uploader](https://imgbb.com/), [ImgBB API](https://api.imgbb.com/), [PicGo.net uploader](https://www.picgo.net/).
 
-```text
-Images
-------------------------
-1. ![](https://sns-webpic-qc.xhscdn.com/path/to/image)
+## Workflow
+
+```mermaid
+flowchart TD
+    A[Open app; add files and choose options] --> B[Scan links; no downloads or writes]
+    B --> C[Review files, URLs and domains]
+    C --> D{Start migration?}
+    D -- Escape / Cancel --> C
+    D -- Return / Start --> E{Matching policy cache?}
+    E -- Yes --> N[Reuse uploaded URL]
+    E -- No --> F[Download original; identify real format]
+    F --> G{Supported format and within limit?}
+    G -- Yes --> K[Use original bytes]
+    G -- No --> H[Try lossless AVIF and eligible WebP]
+    H --> I{Lossless result fits?}
+    I -- Yes --> K
+    I -- No --> J[AVIF at current dimensions: Q80]
+    J --> J1{Fits?}
+    J1 -- Yes --> K
+    J1 -- No --> J2[Try Q70]
+    J2 --> J3{Fits?}
+    J3 -- Yes --> K
+    J3 -- No --> J4{Can shrink again?}
+    J4 -- Yes --> J5[Reduce width and height 15%]
+    J5 --> J
+    J4 -- No --> X[Record failure; keep original link]
+    F -. Invalid / unsupported .-> X
+    K --> L{Identical processed content cached?}
+    L -- Yes --> N
+    L -- No --> M[Rate-limited upload; automatic retries]
+    M --> M1{Upload succeeded?}
+    M1 -- No --> X
+    M1 -- Yes --> N
+    N --> O{Document unchanged since scan / last write?}
+    O -- No --> X
+    O -- Yes --> P[Back up if enabled; replace links atomically; cache result]
+    P --> Q{More images and not stopped?}
+    X --> Q
+    Q -- Yes --> E
+    Q -- No --> R[Summarize; export report or retry failures]
+    R --> S[Release temporary image buffers]
 ```
 
-A bare URL is also recognized in `.txt` files when its host matches the
-selected source domains:
+## Cache, retries, files, and cleanup
 
-```text
-https://sns-webpic-qc.xhscdn.com/path/to/image
+- URL and processed-content caches are separated by platform/API endpoint, image mode, upload cap, and processing rule version. Original-mode links cannot bypass the 1 MB policy. Expiring entries are reused only while still valid.
+- Upload attempts, including retries, share a limiter of at most 50 per minute. Platform throttling triggers a pause before retrying. Network and server failures use the existing bounded backoff.
+- Links are replaced only after successful upload or a valid cached result. Documents changed outside the app since the scan or last successful write are not overwritten. Uploaded URLs remain available in the cache/report.
+- Enabled backups preserve each document before the task's first change, under the state directory. Writes use a temporary file and atomic replacement.
+- Stop/quit waits for a safe point. Completed uploads and writes are kept. A scan is required again after changing input files, provider, endpoint, or domain filters.
+- Images are processed in memory; temporary buffers are released as the task advances. No image download directory is persisted. URL/content mappings, backups, and exported reports remain until you remove them yourself.
+
+## Build from source
+
+Requires macOS, Xcode Command Line Tools (`xcode-select --install`), a development Python 3.11 or later, and network access. On Apple Silicon, Intel builds also require Rosetta 2. Intel Macs build the Intel package; use an Apple Silicon Mac for the arm64 package.
+
+```sh
+python3 scripts/build_app.py --arch arm64
+python3 scripts/build_app.py --arch x86_64
+# Build both on Apple Silicon:
+python3 scripts/build_app.py --arch all
 ```
 
-The same bare URL in `.md` or `.markdown` is ignored unless it is written using
-one of the supported image syntaxes above.
+The builder downloads pinned, SHA-256-checked standalone Python runtimes into the ignored `build/` directory, creates architecture-specific environments, bundles pyvips/libvips codecs with PyInstaller, compiles SwiftUI, and assembles architecture-specific ZIPs in `dist/`. Nothing is installed in the system Python. The Python modules are private app components; there is no supported CLI, Tk GUI, or `.command` launcher.
 
-After a successful upload, only the URL changes:
+For public distribution, supply a Developer ID identity and optionally a configured notarytool Keychain profile:
 
-```text
-Images
-------------------------
-1. https://i.ibb.co/example/image.webp
+```sh
+python3 scripts/build_app.py --arch arm64 --sign 'Developer ID Application: Your Name (TEAMID)' --notary-profile your-profile
 ```
 
-### Standalone development check
+The builder signs embedded executables, notarizes the ZIP, staples the app, and rebuilds the ZIP. Credentials stay in your Keychain. Omit these flags for a local ad-hoc-signed build.
 
-The self-test uses local temporary `.txt`, `.md`, and `.markdown` files,
-including a file that is not valid UTF-8. It verifies the internal three-worker
-queue, content-hash reuse, duplicate-response reuse, shared upload pacing and
-cooldown, graceful interruption, cache resume, indexed replacement, and atomic
-writes without making network requests:
+Only the existing core tests and a small policy smoke check are needed:
 
-```bash
-zsh -n img-link-migrator.command
-./img-link-migrator.command --self-test
+```sh
+build/venv-arm64/bin/python -m unittest discover -s tests
 ```
 
-## License
-
-Licensed under the [GNU Affero General Public License v3.0](LICENSE).
+The bundles contain component license notices in `Contents/Resources/Licenses`. See [THIRD_PARTY.md](THIRD_PARTY.md) for versions, source links, and replacement/rebuild information. Project license: [MIT](LICENSE).
