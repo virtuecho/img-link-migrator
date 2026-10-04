@@ -87,19 +87,29 @@ class SourcePolicyTests(unittest.TestCase):
             migrator.USER_AGENT,
             "IMG-Link-Migrator/{}".format(project_version),
         )
-    def test_default_keys_follow_the_selected_provider(self):
-        with mock.patch.object(migrator, "HARDCODED_IMGBB_API_KEY", "imgbb-key"), \
-                mock.patch.object(migrator, "HARDCODED_PICGO_API_KEY", "picgo-key"), \
-                mock.patch.dict(migrator.os.environ, {
-                    "IMGBB_API_KEY": "imgbb-env", "PICGO_API_KEY": "picgo-env"
-                }, clear=True):
-            self.assertEqual(migrator._provider_default_api_key("imgbb"), "imgbb-key")
-            self.assertEqual(migrator._provider_default_api_key("chevereto"), "picgo-key")
-            with mock.patch.object(migrator, "HARDCODED_IMGBB_API_KEY", ""):
-                self.assertEqual(migrator._provider_default_api_key("imgbb"), "imgbb-env")
-                self.assertEqual(migrator._provider_default_api_key("chevereto"), "picgo-key")
-            with mock.patch.object(migrator, "HARDCODED_PICGO_API_KEY", ""):
-                self.assertEqual(migrator._provider_default_api_key("chevereto"), "picgo-env")
+    def test_api_keys_come_from_the_app_input(self):
+        from app.backend import Service
+        with tempfile.TemporaryDirectory() as folder, mock.patch.dict(migrator.os.environ, {
+            "IMGBB_API_KEY": "unused-env-key", "PICGO_API_KEY": "unused-env-key",
+            "CHEVERETO_API_KEY": "unused-env-key",
+        }):
+            note = pathlib.Path(folder) / "note.md"
+            note.write_text("![x](https://source.example/x.png)\n", encoding="utf-8")
+            for provider in ("imgbb", "chevereto"):
+                service = Service()
+                events = []
+                service.emit = events.append
+                config = {"targets": [str(note)], "provider": provider}
+                service.run({"action": "scan", "settings": config})
+                service.run({"action": "migrate", "settings": config})
+                self.assertEqual(service.secret, "")
+                self.assertTrue(any(e["kind"] == "error" and "API key in the app" in e["message"] for e in events))
+                config["apiKey"] = "test-app-key"
+                with mock.patch.object(migrator, "_create_upload_client", side_effect=migrator.MigrationError("test stop")) as create:
+                    service.run({"action": "migrate", "settings": config})
+                self.assertEqual(create.call_args.args[1], "test-app-key")
+                self.assertEqual(service.clean("test-app-key"), "[REDACTED]")
+                self.assertEqual(note.read_text(), "![x](https://source.example/x.png)\n")
 
     def test_upload_rate_limit_is_shared_by_both_provider_clients(self):
         self.assertEqual(migrator.UPLOADS_PER_MINUTE, 50)
@@ -485,9 +495,7 @@ class CheveretoClientTests(unittest.TestCase):
         self.assertIn(b"PT600S", upload_request.data)
 
     def test_picgo_destination_is_excluded_for_chevereto(self):
-        excluded = migrator._provider_excluded_hosts(
-            "chevereto", "https://www.picgo.net/"
-        )
+        excluded = migrator._provider_excluded_hosts("chevereto")
         self.assertFalse(
             migrator._url_allowed(
                 "https://cdn.picgo.net/images/example.png", (), excluded
@@ -499,12 +507,9 @@ class CheveretoClientTests(unittest.TestCase):
             )
         )
 
-    def test_chevereto_base_url_rejects_embedded_credentials(self):
+    def test_custom_provider_is_rejected(self):
         with self.assertRaises(migrator.MigrationError):
-            migrator.CheveretoClient(
-                "fake-chevereto-key",
-                base_url="https://user:password@images.example.com",
-            )
+            migrator._create_upload_client("custom", "test-app-key", 0, 0, None, threading.Event())
 
 
 if __name__ == "__main__":

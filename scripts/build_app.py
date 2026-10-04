@@ -64,7 +64,7 @@ def build(architecture, identity=None, notary_profile=None):
         run(prefix + [python, "-m", "venv", environment])
     python = environment / "bin/python"
     run(prefix + [python, "-m", "pip", "install", "--disable-pip-version-check",
-                  "pyvips[binary]==3.2.0", "pyvips-binary==8.18.7", "Pillow==12.3.0", "pyinstaller==6.16.0"])
+                  "pyvips[binary]==3.2.0", "pyvips-binary==8.18.7", "Pillow==12.3.0", "pi-heif==1.4.0", "pyinstaller==6.16.0"])
     sites = json.loads(run(prefix + [python, "-c", "import site,json; print(json.dumps(site.getsitepackages()))"],
                            capture_output=True, text=True).stdout)
     site = pathlib.Path(next(p for p in sites if (pathlib.Path(p) / "pyvips_binary.dylibs").exists()))
@@ -100,10 +100,11 @@ def build(architecture, identity=None, notary_profile=None):
             shutil.move(library, target)
         directory.rmdir()
     run(["xcrun", "swiftc", "-parse-as-library", "-O", "-target", architecture + "-apple-macosx13.0",
-         ROOT / "app/MigratorApp.swift", "-o", executable, "-framework", "SwiftUI", "-framework", "AppKit"])
+         ROOT / "app/MigratorApp.swift", "-o", executable, "-framework", "SwiftUI", "-framework", "AppKit", "-framework", "Security"])
     info = {
         "CFBundleName": "IMG Link Migrator", "CFBundleDisplayName": "IMG Link Migrator",
         "CFBundleIdentifier": "io.github.virtuecho.img-link-migrator",
+        "CFBundleDevelopmentRegion": "en", "CFBundleLocalizations": ["en"],
         "CFBundleExecutable": "IMG Link Migrator", "CFBundlePackageType": "APPL",
         "CFBundleShortVersionString": VERSION, "CFBundleVersion": "1",
         "LSMinimumSystemVersion": "13.0", "NSHighResolutionCapable": True,
@@ -136,7 +137,7 @@ def build(architecture, identity=None, notary_profile=None):
     # App-only sources make replacement/rebuilding of LGPL-linked components practical.
     sources = resources / "Source"
     sources.mkdir()
-    for name in ("img_link_migrator.py", "image_processing.py", "app/backend.py", "app/MigratorApp.swift", "scripts/build_app.py", "pyproject.toml"):
+    for name in ("img_link_migrator.py", "image_processing.py", "app/backend.py", "app/MigratorApp.swift", "scripts/build_app.py", "pyproject.toml", "README.md", "README_CN.md", "LICENSE", "THIRD_PARTY.md"):
         target = sources / name
         target.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(ROOT / name, target)

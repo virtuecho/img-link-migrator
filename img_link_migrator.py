@@ -26,16 +26,9 @@ from typing import Callable, Dict, Iterable, List, Optional, Sequence, Set, Tupl
 
 APP_NAME = "IMG Link Migrator"
 APP_VERSION = "1.0.0"
-# Optional: enter each upload service's API key below; leave empty for fallback.
-# Explicit session credentials take precedence over configured defaults.
-HARDCODED_IMGBB_API_KEY = ""
-HARDCODED_PICGO_API_KEY = ""
-ENV_IMGBB_API_KEY = "IMGBB_API_KEY"
-ENV_PICGO_API_KEY = "PICGO_API_KEY"
-ENV_CHEVERETO_API_KEY = "CHEVERETO_API_KEY"
 DEFAULT_PROVIDER = "imgbb"
 IMGBB_CACHE_NAMESPACE = "imgbb"
-DEFAULT_CHEVERETO_URL = "https://www.picgo.net"
+PICGO_BASE_URL = "https://www.picgo.net"
 MAX_IMAGE_BYTES = 100_000_000
 UPLOADS_PER_MINUTE = 50
 MIN_UPLOAD_INTERVAL_SECONDS = 1.21
@@ -591,23 +584,8 @@ def _multipart_file_body(
     return b"".join(chunks)
 
 
-def _normalize_chevereto_base_url(base_url: str) -> str:
-    parsed = urllib.parse.urlsplit(base_url.strip())
-    if parsed.scheme != "https" or not parsed.hostname:
-        raise MigrationError("PicGo API base URL must be a valid HTTPS URL.")
-    if parsed.username or parsed.password:
-        raise MigrationError("PicGo API base URL cannot contain credentials.")
-    if parsed.query or parsed.fragment:
-        raise MigrationError("PicGo API base URL cannot contain a query or fragment.")
-    clean_path = parsed.path.rstrip("/")
-    return urllib.parse.urlunsplit(
-        (parsed.scheme, parsed.netloc, clean_path, "", "")
-    )
-
-
 class BaseUploadClient:
     provider_name = "image host"
-    environment_variable = "API_KEY"
     cache_namespace = "default"
 
     def __init__(
@@ -626,9 +604,7 @@ class BaseUploadClient:
         self.upload_rate_limiter = UploadRateLimiter()
         if not self.api_key:
             raise MigrationError(
-                "Missing {} API key. Set {} or enter it in the app.".format(
-                    self.provider_name, self.environment_variable
-                )
+                "Enter your {} API key in the app.".format(self.provider_name)
             )
         if expiration and not 60 <= expiration <= 15_552_000:
             raise MigrationError(
@@ -730,7 +706,6 @@ class BaseUploadClient:
 
 class ImgBBClient(BaseUploadClient):
     provider_name = "ImgBB"
-    environment_variable = ENV_IMGBB_API_KEY
     cache_namespace = IMGBB_CACHE_NAMESPACE
 
     def upload(self, data: bytes, content_type: str, filename: str, url: str) -> str:
@@ -790,26 +765,7 @@ class ImgBBClient(BaseUploadClient):
 
 class CheveretoClient(BaseUploadClient):
     provider_name = "PicGo.net"
-    environment_variable = ENV_PICGO_API_KEY
-
-    def __init__(
-        self,
-        api_key: str,
-        base_url: str = DEFAULT_CHEVERETO_URL,
-        expiration: int = 0,
-        retries: int = 3,
-        callback: Optional[ProgressCallback] = None,
-        cancel_event: Optional[threading.Event] = None,
-    ) -> None:
-        self.base_url = _normalize_chevereto_base_url(base_url)
-        self.cache_namespace = "chevereto:{}".format(self.base_url.lower())
-        super().__init__(
-            api_key,
-            expiration=expiration,
-            retries=retries,
-            callback=callback,
-            cancel_event=cancel_event,
-        )
+    cache_namespace = "chevereto:" + PICGO_BASE_URL
 
     @staticmethod
     def _error_message(payload: object, fallback: str) -> str:
@@ -873,7 +829,7 @@ class CheveretoClient(BaseUploadClient):
                 fields=fields,
             )
             request = urllib.request.Request(
-                self.base_url + "/api/1/upload",
+                PICGO_BASE_URL + "/api/1/upload",
                 data=body,
                 headers={
                     "X-API-Key": self.api_key,
@@ -1092,6 +1048,7 @@ class MigrationEngine:
             )
         else:
             plans = list(plans)
+        original_plans = {plan.path: plan for plan in plans}
         if only_urls is not None:
             filtered: List[FilePlan] = []
             for plan in plans:
@@ -1265,6 +1222,10 @@ class MigrationEngine:
             report.cancelled = True
 
         report.results = results
+        # Carry our own writes into the scanned plans used by a later retry.
+        for plan in plans:
+            original_plans[plan.path].text = plan.text
+            original_plans[plan.path].fingerprint = plan.fingerprint
         if report.updated_files and backup:
             report.backup_dir = str(backup.root)
         return report
@@ -1277,54 +1238,11 @@ def _parse_hosts(values: Sequence[str]) -> Tuple[str, ...]:
     return tuple(dict.fromkeys(hosts))
 
 
-def _provider_environment_variable(provider: str) -> str:
-    if provider == "imgbb":
-        return ENV_IMGBB_API_KEY
-    if provider == "chevereto":
-        return ENV_PICGO_API_KEY
-    raise MigrationError("Unsupported upload provider: {}".format(provider))
-
-
-def _provider_api_key_from_environment(provider: str) -> str:
-    value = os.environ.get(_provider_environment_variable(provider), "")
-    if not value and provider == "chevereto":
-        value = os.environ.get(ENV_CHEVERETO_API_KEY, "")
-    return value
-
-
-def _provider_default_api_key(provider: str) -> str:
-    if provider == "imgbb":
-        key = HARDCODED_IMGBB_API_KEY
-    elif provider == "chevereto":
-        key = HARDCODED_PICGO_API_KEY
-    else:
-        raise MigrationError("Unsupported upload provider: {}".format(provider))
-    return key or _provider_api_key_from_environment(provider)
-
-
-def _provider_excluded_hosts(
-    provider: str, chevereto_url: str = DEFAULT_CHEVERETO_URL
-) -> Tuple[str, ...]:
+def _provider_excluded_hosts(provider: str) -> Tuple[str, ...]:
     if provider == "imgbb":
         return IMGBB_EXCLUDED_HOSTS
     if provider == "chevereto":
-        base_url = _normalize_chevereto_base_url(chevereto_url)
-        host = urllib.parse.urlsplit(base_url).hostname
-        if host == "www.picgo.net":
-            host = "picgo.net"
-        return (host,) if host else ()
-    raise MigrationError("Unsupported upload provider: {}".format(provider))
-
-
-def _provider_cache_namespace(
-    provider: str, chevereto_url: str = DEFAULT_CHEVERETO_URL
-) -> str:
-    if provider == "imgbb":
-        return IMGBB_CACHE_NAMESPACE
-    if provider == "chevereto":
-        return "chevereto:{}".format(
-            _normalize_chevereto_base_url(chevereto_url).lower()
-        )
+        return ("picgo.net",)
     raise MigrationError("Unsupported upload provider: {}".format(provider))
 
 
@@ -1335,7 +1253,6 @@ def _create_upload_client(
     retries: int,
     callback: Optional[ProgressCallback],
     cancel_event: threading.Event,
-    chevereto_url: str = DEFAULT_CHEVERETO_URL,
 ) -> BaseUploadClient:
     if provider == "imgbb":
         return ImgBBClient(
@@ -1348,11 +1265,9 @@ def _create_upload_client(
     if provider == "chevereto":
         return CheveretoClient(
             api_key,
-            base_url=chevereto_url,
             expiration=expiration,
             retries=retries,
             callback=callback,
             cancel_event=cancel_event,
         )
     raise MigrationError("Unsupported upload provider: {}".format(provider))
-

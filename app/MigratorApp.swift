@@ -1,6 +1,45 @@
 import SwiftUI
 import AppKit
+import Security
 import UniformTypeIdentifiers
+
+enum APICredentials {
+    static func query(_ provider: String) -> [String: Any] {
+        [kSecClass as String: kSecClassGenericPassword,
+         kSecAttrService as String: "io.github.virtuecho.img-link-migrator",
+         kSecAttrAccount as String: provider]
+    }
+    static func load(_ provider: String) throws -> String {
+        var attributes = query(provider)
+        attributes[kSecReturnData as String] = true
+        attributes[kSecMatchLimit as String] = kSecMatchLimitOne
+        var result: CFTypeRef?
+        let status = SecItemCopyMatching(attributes as CFDictionary, &result)
+        if status == errSecItemNotFound { return "" }
+        try check(status)
+        return (result as? Data).flatMap { String(data: $0, encoding: .utf8) } ?? ""
+    }
+    static func save(_ key: String, provider: String) throws {
+        let attributes = query(provider)
+        if key.isEmpty {
+            let status = SecItemDelete(attributes as CFDictionary)
+            if status != errSecItemNotFound { try check(status) }
+            return
+        }
+        let value = [kSecValueData as String: Data(key.utf8)]
+        let status = SecItemUpdate(attributes as CFDictionary, value as CFDictionary)
+        if status == errSecItemNotFound {
+            try check(SecItemAdd(attributes.merging(value) { _, new in new } as CFDictionary, nil))
+        } else {
+            try check(status)
+        }
+    }
+    static func check(_ status: OSStatus) throws {
+        guard status != errSecSuccess else { return }
+        throw NSError(domain: NSOSStatusErrorDomain, code: Int(status),
+                      userInfo: [NSLocalizedDescriptionKey: SecCopyErrorMessageString(status, nil) as String? ?? "Keychain error \(status)"])
+    }
+}
 
 struct ImageRow: Identifiable {
     var id: String { url }
@@ -14,11 +53,20 @@ struct ImageRow: Identifiable {
 
 @MainActor final class MigratorModel: ObservableObject {
     @Published var targets: [String] = []
-    @Published var provider = "imgbb"
-    @Published var apiKey = ""
-    @Published var baseURL = "https://www.picgo.net"
+    @Published var provider = "imgbb" {
+        didSet {
+            UserDefaults.standard.set(provider, forKey: "uploadPlatform")
+            loadAPIKey()
+        }
+    }
+    @Published var apiKey = "" {
+        didSet {
+            guard !loadingKey else { return }
+            do { try APICredentials.save(apiKey.trimmingCharacters(in: .whitespacesAndNewlines), provider: provider) }
+            catch { status = "Cannot save API key to Keychain: \(error.localizedDescription)" }
+        }
+    }
     @Published var mode = "size_limit"
-    @Published var platformLimit = 25
     @Published var includeHosts = ""
     @Published var excludeHosts = "xhscdn"
     @Published var expiration = "0"
@@ -37,27 +85,41 @@ struct ImageRow: Identifiable {
     @Published var total = 0
     @Published var report: [String: Any]?
     private var scannedSignature = ""
+    private var loadingKey = false
     private var process: Process?
     private var input: FileHandle?
     private var outputBuffer = Data()
     var pendingQuit = false
 
+    init() {
+        if let saved = UserDefaults.standard.string(forKey: "uploadPlatform"), ["imgbb", "picgo"].contains(saved) {
+            provider = saved
+        }
+        loadAPIKey()
+    }
+    func loadAPIKey() {
+        loadingKey = true
+        defer { loadingKey = false }
+        do { apiKey = try APICredentials.load(provider) }
+        catch { apiKey = ""; status = "Cannot read API key from Keychain: \(error.localizedDescription)" }
+    }
+
     var settings: [String: Any] {
         ["targets": targets, "provider": provider == "imgbb" ? "imgbb" : "chevereto",
-         "apiKey": apiKey, "baseURL": provider == "custom" ? baseURL : "https://www.picgo.net",
-         "mode": mode, "platformLimit": provider == "imgbb" ? 32_000_000 : (provider == "custom" ? platformLimit * 1_000_000 : 25_000_000),
+         "apiKey": apiKey, "mode": mode,
          "includeHosts": includeHosts, "excludeHosts": excludeHosts, "expiration": Int(expiration) ?? -1,
          "retries": retries, "backup": backup, "stateDir": stateDir, "reportPath": reportPath]
     }
     var signature: String {
-        [targets.joined(separator: "\n"), provider, provider == "custom" ? baseURL : "", includeHosts, excludeHosts].joined(separator: "\u{0}")
+        [targets.joined(separator: "\n"), provider, includeHosts, excludeHosts].joined(separator: "\u{0}")
     }
-    var canMigrate: Bool { !busy && !rows.isEmpty && scannedSignature == signature && !selectedURLs.isEmpty }
+    var canMigrate: Bool { !busy && !apiKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && !rows.isEmpty && scannedSignature == signature && !selectedURLs.isEmpty }
     var selectedURLs: [String] { rows.filter { !disabledHosts.contains($0.host) }.map(\.url) }
     var domains: [String] { Array(Set(rows.map(\.host))).sorted() }
     var failedURLs: [String] { rows.filter { $0.status == "Failed" && !disabledHosts.contains($0.host) }.map(\.url) }
 
     func add(_ paths: [String]) {
+        guard !busy else { return }
         targets = Array(Set(targets + paths)).sorted()
     }
     func chooseTargets() {
@@ -124,6 +186,7 @@ struct ImageRow: Identifiable {
         }
     }
     func requestStop() {
+        guard busy else { return }
         stopping = true
         status = "Stopping at a safe point…"
         write(["action": "stop"])
@@ -250,6 +313,7 @@ struct ImageRow: Identifiable {
         let model = Self.model
         if !model.busy { model.shutdown(); return .terminateNow }
         if model.confirm("Stop and quit?", "The app will quit after the current operation reaches a safe point.", accept: "Stop and Quit") {
+            if !model.busy { model.shutdown(); return .terminateNow }
             model.pendingQuit = true
             model.requestStop()
             return .terminateLater
@@ -306,20 +370,17 @@ struct MigratorView: View {
                     Picker("Upload to", selection: $model.provider) {
                         Text("ImgBB").tag("imgbb")
                         Text("PicGo.net").tag("picgo")
-                        Text("Custom PicGo API").tag("custom")
                     }
-                    SecureField("API key (or use environment variable)", text: $model.apiKey)
-                    if model.provider == "custom" {
-                        TextField("HTTPS service URL", text: $model.baseURL)
-                        Stepper("Upload limit: \(model.platformLimit) MB", value: $model.platformLimit, in: 1...100)
-                    }
+                    Text("API key")
+                    SecureField("Enter your \(model.provider == "imgbb" ? "ImgBB" : "PicGo.net") API key", text: $model.apiKey)
+                    Text("Saved in macOS Keychain for future launches.").font(.caption).foregroundStyle(.secondary)
                 }
                 VStack(alignment: .leading) {
                     Picker("Image mode", selection: $model.mode) {
                         Text("Size Limit — below 1 MB").tag("size_limit")
                         Text("Original Upload").tag("original")
                     }
-                    Text(model.mode == "size_limit" ? "Lossless first; AVIF Q80 → Q70; shrink 15% only when necessary." : "Keep supported originals up to \(model.provider == "imgbb" ? 32 : model.provider == "custom" ? model.platformLimit : 25) MB; process larger or unsupported images.")
+                    Text(model.mode == "size_limit" ? "Lossless first; AVIF Q80 → Q70; shrink 15% only when necessary." : "Keep supported originals up to \(model.provider == "imgbb" ? 32 : 25) MB; process larger or unsupported images.")
                         .font(.caption).foregroundStyle(.secondary)
                     Toggle("Back up documents before writing", isOn: $model.backup)
                 }
