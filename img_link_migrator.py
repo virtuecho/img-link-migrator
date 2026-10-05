@@ -114,7 +114,6 @@ class UrlResult:
     new_url: Optional[str] = None
     status: str = "pending"
     detail: str = ""
-    image: dict = dataclasses.field(default_factory=dict)
 
     @property
     def succeeded(self) -> bool:
@@ -122,7 +121,7 @@ class UrlResult:
 
 
 @dataclasses.dataclass
-class MigrationReport:
+class MigrationSummary:
     scanned_files: int = 0
     reference_count: int = 0
     unique_url_count: int = 0
@@ -132,23 +131,6 @@ class MigrationReport:
     updated_files: List[str] = dataclasses.field(default_factory=list)
     backup_dir: Optional[str] = None
     cancelled: bool = False
-    results: Dict[str, UrlResult] = dataclasses.field(default_factory=dict)
-
-    def as_dict(self) -> Dict[str, object]:
-        return {
-            "scanned_files": self.scanned_files,
-            "reference_count": self.reference_count,
-            "unique_url_count": self.unique_url_count,
-            "uploaded_urls": self.uploaded_urls,
-            "cached_urls": self.cached_urls,
-            "failed_urls": self.failed_urls,
-            "updated_files": self.updated_files,
-            "backup_dir": self.backup_dir,
-            "cancelled": self.cancelled,
-            "results": {
-                url: dataclasses.asdict(result) for url, result in self.results.items()
-            },
-        }
 
 
 ProgressCallback = Callable[[Dict[str, object]], None]
@@ -441,20 +423,9 @@ class StateStore:
             return
 
     @staticmethod
-    def _entry_valid(entry: object, required_expiration: int) -> bool:
-        if not isinstance(entry, dict) or not entry.get("url"):
-            return False
-        expires_at = entry.get("expires_at")
-        if expires_at is None:
-            return True
-        if required_expiration == 0:
-            # A temporary upload must not satisfy a request for permanent
-            # storage, even when it has not expired yet.
-            return False
-        try:
-            return float(expires_at) > time.time() + required_expiration + 60
-        except (TypeError, ValueError):
-            return False
+    def _entry_valid(entry: object) -> bool:
+        # Legacy temporary uploads must not be reused as permanent images.
+        return isinstance(entry, dict) and bool(entry.get("url")) and entry.get("expires_at") is None
 
     @staticmethod
     def _cache_key(value: str, namespace: str) -> str:
@@ -465,28 +436,26 @@ class StateStore:
     def lookup_url(
         self,
         original_url: str,
-        required_expiration: int = 0,
         namespace: str = IMGBB_CACHE_NAMESPACE,
     ) -> Optional[str]:
         with self._lock:
             urls = self.data.get("urls", {})
             key = self._cache_key(original_url, namespace)
             entry = urls.get(key) if isinstance(urls, dict) else None
-            if self._entry_valid(entry, required_expiration):
+            if self._entry_valid(entry):
                 return str(entry["url"])
         return None
 
     def lookup_hash(
         self,
         digest: str,
-        required_expiration: int = 0,
         namespace: str = IMGBB_CACHE_NAMESPACE,
     ) -> Optional[str]:
         with self._lock:
             hashes = self.data.get("hashes", {})
             key = self._cache_key(digest, namespace)
             entry = hashes.get(key) if isinstance(hashes, dict) else None
-            if self._entry_valid(entry, required_expiration):
+            if self._entry_valid(entry):
                 return str(entry["url"])
         return None
 
@@ -495,7 +464,6 @@ class StateStore:
         original_url: str,
         digest: str,
         new_url: str,
-        expiration: int,
         namespace: str = IMGBB_CACHE_NAMESPACE,
     ) -> None:
         now = time.time()
@@ -503,7 +471,6 @@ class StateStore:
             "url": new_url,
             "sha256": digest,
             "uploaded_at": now,
-            "expires_at": now + expiration if expiration else None,
         }
         with self._lock:
             urls = self.data.setdefault("urls", {})
@@ -591,13 +558,11 @@ class BaseUploadClient:
     def __init__(
         self,
         api_key: str,
-        expiration: int = 0,
         retries: int = 3,
         callback: Optional[ProgressCallback] = None,
         cancel_event: Optional[threading.Event] = None,
     ) -> None:
         self.api_key = api_key.strip()
-        self.expiration = expiration
         self.retries = retries
         self.callback = callback
         self.cancel_event = cancel_event or threading.Event()
@@ -605,10 +570,6 @@ class BaseUploadClient:
         if not self.api_key:
             raise MigrationError(
                 "Enter your {} API key in the app.".format(self.provider_name)
-            )
-        if expiration and not 60 <= expiration <= 15_552_000:
-            raise MigrationError(
-                "Expiration must be 0 or between 60 and 15552000 seconds."
             )
         if retries < 0 or retries > 10:
             raise MigrationError("Retries must be between 0 and 10.")
@@ -716,8 +677,6 @@ class ImgBBClient(BaseUploadClient):
                 boundary, "image", data, content_type, filename
             )
             query = {"key": self.api_key}
-            if self.expiration:
-                query["expiration"] = str(self.expiration)
             endpoint = "https://api.imgbb.com/1/upload?" + urllib.parse.urlencode(query)
             request = urllib.request.Request(
                 endpoint,
@@ -818,8 +777,6 @@ class CheveretoClient(BaseUploadClient):
             self.upload_rate_limiter.wait(self.cancel_event)
             boundary = "----IMGLinkMigrator{}".format(uuid.uuid4().hex)
             fields: List[Tuple[str, str]] = [("format", "json")]
-            if self.expiration:
-                fields.append(("expiration", "PT{}S".format(self.expiration)))
             body = _multipart_file_body(
                 boundary,
                 "source",
@@ -933,7 +890,6 @@ class MigrationEngine:
         exclude_hosts: Sequence[str] = DEFAULT_EXCLUDED_HOSTS,
         callback: Optional[ProgressCallback] = None,
         cancel_event: Optional[threading.Event] = None,
-        expiration: int = 0,
         backup_enabled: bool = True,
         cache_namespace: Optional[str] = None,
         image_processor=None,
@@ -945,7 +901,6 @@ class MigrationEngine:
         self.exclude_hosts = tuple(exclude_hosts)
         self.callback = callback
         self.cancel_event = cancel_event or threading.Event()
-        self.expiration = expiration
         self.backup_enabled = backup_enabled
         self.cache_namespace = cache_namespace or getattr(
             client, "cache_namespace", IMGBB_CACHE_NAMESPACE
@@ -958,7 +913,7 @@ class MigrationEngine:
         url: str,
         result: UrlResult,
         plans: Sequence[FilePlan],
-        report: MigrationReport,
+        report: MigrationSummary,
         backup: Optional[BackupSession],
         backed_up_paths: Set[pathlib.Path],
     ) -> List[str]:
@@ -1038,7 +993,7 @@ class MigrationEngine:
         apply: bool,
         only_urls: Optional[Set[str]] = None,
         plans: Optional[Sequence[FilePlan]] = None,
-    ) -> MigrationReport:
+    ) -> MigrationSummary:
         if plans is None:
             plans = scan_targets(
                 targets,
@@ -1058,7 +1013,7 @@ class MigrationEngine:
 
         all_refs = [ref for plan in plans for ref in plan.references]
         urls = list(dict.fromkeys(ref.url for ref in all_refs))
-        report = MigrationReport(
+        report = MigrationSummary(
             scanned_files=len(plans),
             reference_count=len(all_refs),
             unique_url_count=len(urls),
@@ -1081,7 +1036,6 @@ class MigrationEngine:
                 "Internal error: upload client is missing for an apply run."
             )
 
-        results: Dict[str, UrlResult] = {}
         backup = BackupSession(self.store.root) if self.backup_enabled else None
         backed_up_paths: Set[pathlib.Path] = set()
         try:
@@ -1098,13 +1052,12 @@ class MigrationEngine:
                     total=len(urls),
                 )
                 cached = self.store.lookup_url(
-                    url, self.expiration, namespace=self.cache_namespace
+                    url, namespace=self.cache_namespace
                 )
                 if cached:
                     result = UrlResult(
                         url, cached, "cached", "Reused local migration cache."
                     )
-                    results[url] = result
                     report.cached_urls += 1
                     write_errors = self._write_completed_url(
                         url,
@@ -1136,22 +1089,19 @@ class MigrationEngine:
                     continue
                 try:
                     data, content_type, filename = self.client.download(url)
-                    image_detail = {}
                     if self.image_processor:
                         prepared = self.image_processor.prepare(data, filename)
                         data, content_type, filename = prepared.data, prepared.content_type, prepared.filename
-                        image_detail = prepared.detail
-                        _notify(self.callback, kind="image_prepared", url=url, **image_detail)
+                        _notify(self.callback, kind="image_prepared", url=url, **prepared.detail)
                     digest = hashlib.sha256(data).hexdigest()
                     hash_cached = self.store.lookup_hash(
-                        digest, self.expiration, namespace=self.cache_namespace
+                        digest, namespace=self.cache_namespace
                     )
                     if hash_cached:
                         self.store.record(
                             url,
                             digest,
                             hash_cached,
-                            self.expiration,
                             namespace=self.cache_namespace,
                         )
                         result = UrlResult(
@@ -1169,12 +1119,10 @@ class MigrationEngine:
                             url,
                             digest,
                             new_url,
-                            self.expiration,
                             namespace=self.cache_namespace,
                         )
-                        result = UrlResult(url, new_url, "uploaded", "Upload succeeded.", image_detail)
+                        result = UrlResult(url, new_url, "uploaded", "Upload succeeded.")
                         report.uploaded_urls += 1
-                    results[url] = result
                     write_errors = self._write_completed_url(
                         url,
                         result,
@@ -1206,7 +1154,6 @@ class MigrationEngine:
                     raise
                 except Exception as exc:
                     result = UrlResult(url, None, "failed", str(exc))
-                    results[url] = result
                     report.failed_urls[url] = str(exc)
                     _notify(
                         self.callback,
@@ -1221,7 +1168,6 @@ class MigrationEngine:
         except CancelledError:
             report.cancelled = True
 
-        report.results = results
         # Carry our own writes into the scanned plans used by a later retry.
         for plan in plans:
             original_plans[plan.path].text = plan.text
@@ -1249,7 +1195,6 @@ def _provider_excluded_hosts(provider: str) -> Tuple[str, ...]:
 def _create_upload_client(
     provider: str,
     api_key: str,
-    expiration: int,
     retries: int,
     callback: Optional[ProgressCallback],
     cancel_event: threading.Event,
@@ -1257,7 +1202,6 @@ def _create_upload_client(
     if provider == "imgbb":
         return ImgBBClient(
             api_key,
-            expiration=expiration,
             retries=retries,
             callback=callback,
             cancel_event=cancel_event,
@@ -1265,7 +1209,6 @@ def _create_upload_client(
     if provider == "chevereto":
         return CheveretoClient(
             api_key,
-            expiration=expiration,
             retries=retries,
             callback=callback,
             cancel_event=cancel_event,

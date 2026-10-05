@@ -99,7 +99,7 @@ class SourcePolicyTests(unittest.TestCase):
                 service = Service()
                 events = []
                 service.emit = events.append
-                config = {"targets": [str(note)], "provider": provider}
+                config = {"targets": [str(note)], "provider": provider, "includeHosts": ""}
                 service.run({"action": "scan", "settings": config})
                 service.run({"action": "migrate", "settings": config})
                 self.assertEqual(service.secret, "")
@@ -127,6 +127,31 @@ class SourcePolicyTests(unittest.TestCase):
             imgbb.upload_rate_limiter.interval_seconds,
             chevereto.upload_rate_limiter.interval_seconds,
         )
+
+    def test_app_defaults_filter_xhscdn_and_show_summary(self):
+        from app.backend import Service
+        from image_processing import ImageProcessor
+        with tempfile.TemporaryDirectory() as folder:
+            root = pathlib.Path(folder)
+            note = root / "note.md"
+            source = "https://sns.xhscdn.com/a.png"
+            original = "![a](" + source + ")\n![b](https://cdn.example/b.png)\n"
+            note.write_text(original, encoding="utf-8")
+            store = migrator.StateStore(root / "state")
+            store.record(source, "digest", "https://i.ibb.co/a.png", namespace="imgbb:" + ImageProcessor().namespace)
+            service = Service()
+            events = []
+            service.emit = events.append
+            config = {"targets": [str(note)], "apiKey": "test-app-key", "stateDir": str(root / "state")}
+            service.run({"action": "scan", "settings": config})
+            self.assertEqual(next(e for e in events if e["kind"] == "scan_done")["urls"], [source])
+            service.run({"action": "migrate", "settings": config, "selectedURLs": [source]})
+            summary = next(e for e in events if e["kind"] == "done")["summary"]
+            self.assertEqual((summary["cached_urls"], summary["updated_files"], summary["failed_urls"]), (1, 1, 0))
+            self.assertIn("https://cdn.example/b.png", note.read_text())
+            self.assertIn("https://i.ibb.co/a.png", note.read_text())
+            self.assertEqual(next(pathlib.Path(summary["backup_dir"]).glob("*-note.md")).read_text(), original)
+            self.assertEqual({p.name for p in root.iterdir()}, {"note.md", "state"})
 
 
 class ObservingClient(FakeClient):
@@ -380,11 +405,9 @@ class MigrationTests(unittest.TestCase):
                 "url": "https://i.ibb.co/temp.png",
                 "expires_at": time.time() + 3600,
             }
-            self.assertIsNone(store.lookup_url("source", required_expiration=0))
-            self.assertEqual(
-                store.lookup_url("source", required_expiration=600),
-                "https://i.ibb.co/temp.png",
-            )
+            self.assertIsNone(store.lookup_url("source"))
+            store.record("source", "digest", "https://i.ibb.co/permanent.png")
+            self.assertEqual(store.lookup_url("source"), "https://i.ibb.co/permanent.png")
 
     def test_provider_caches_are_isolated(self):
         with tempfile.TemporaryDirectory() as raw_dir:
@@ -393,14 +416,12 @@ class MigrationTests(unittest.TestCase):
                 "source",
                 "digest",
                 "https://i.ibb.co/image.png",
-                0,
                 namespace="imgbb",
             )
             store.record(
                 "source",
                 "digest",
                 "https://www.picgo.net/images/image.png",
-                0,
                 namespace="chevereto:https://www.picgo.net",
             )
             self.assertEqual(
@@ -466,7 +487,6 @@ class CheveretoClientTests(unittest.TestCase):
         ]
         client = migrator.CheveretoClient(
             "fake-chevereto-key",
-            expiration=600,
             retries=0,
             cancel_event=ImmediateEvent(),
         )
@@ -491,8 +511,12 @@ class CheveretoClientTests(unittest.TestCase):
         self.assertEqual(headers["x-api-key"], "fake-chevereto-key")
         self.assertIn(b'name="source"; filename="example.png"', upload_request.data)
         self.assertIn(b'name="format"', upload_request.data)
-        self.assertIn(b'name="expiration"', upload_request.data)
-        self.assertIn(b"PT600S", upload_request.data)
+        self.assertNotIn(b'name="expiration"', upload_request.data)
+        with mock.patch.object(migrator.urllib.request, "urlopen", return_value=FakeHTTPResponse({
+            "success": True, "data": {"url": "https://i.ibb.co/example.png"}
+        })) as urlopen:
+            migrator.ImgBBClient("test-app-key", retries=0).upload(b"image", "image/png", "example.png", "https://source.example/x.png")
+        self.assertNotIn("expiration", migrator.urllib.parse.parse_qs(migrator.urllib.parse.urlsplit(urlopen.call_args.args[0].full_url).query))
 
     def test_picgo_destination_is_excluded_for_chevereto(self):
         excluded = migrator._provider_excluded_hosts("chevereto")
@@ -509,7 +533,7 @@ class CheveretoClientTests(unittest.TestCase):
 
     def test_custom_provider_is_rejected(self):
         with self.assertRaises(migrator.MigrationError):
-            migrator._create_upload_client("custom", "test-app-key", 0, 0, None, threading.Event())
+            migrator._create_upload_client("custom", "test-app-key", 0, None, threading.Event())
 
 
 if __name__ == "__main__":

@@ -22,7 +22,7 @@
 3. 选择图片模式和高级选项。默认 **Size Limit**，并开启文档备份。
 4. 点击 **Scan**。查看文档、图片链接、数量及来源域名，取消勾选不处理的域名。
 5. 点击 **Start Migration**。确认窗口 **Enter 同意、Escape 取消**。
-6. 查看每张图片的状态、输出格式、大小、尺寸、质量，重试失败项目或导出 JSON 报告。
+6. 查看每张图片的状态、输出格式、大小、尺寸、质量，可重试失败项目。
 
 继续识别行内 Markdown 图片、被图片引用使用的引用式定义、HTML `<img>`。只有 `.txt` 识别裸图片 URL。跳过 frontmatter、围栏代码块及行内代码，保留链接文字和文档结构。
 
@@ -34,19 +34,17 @@
 | API key | 在应用密码式输入框填写；保存在 macOS 钥匙串 |
 | Image mode | Size Limit |
 | Back up documents | 开启 |
-| Include domains | 空，即全部符合条件的域名；逗号分隔 |
-| Exclude domains | `xhscdn`；逗号分隔；自动排除目标图床域名 |
+| Include domains | `xhscdn`，匹配域名中含该关键词的链接；清空即包含全部符合条件的域名；逗号分隔 |
+| Exclude domains | 空；逗号分隔；自动排除目标图床域名 |
 | Source domain selection | 默认勾选扫描出的所有域名，可取消勾选 |
 | Show URLs | 开启；关闭时显示域名 |
-| Delete after (seconds) | 0 永不删除；否则 60–15,552,000 秒，需平台支持 |
 | Automatic retries | 3；可设置 0–10 |
 | State directory | `~/Library/Application Support/IMG Link Migrator` |
-| Automatic JSON report | 空；可设置自动导出的文件路径 |
-| Export Report | 任务结束后导出本次报告 |
+| Clear Cache and Backups | 空闲时将状态目录中的上传缓存和文档备份移到废纸篓 |
 | Retry Failed | 重试当前域名选择中的失败图片 |
 | Stop | 不再开始新图片，当前操作到安全位置后结束 |
 
-开始迁移前填写所选平台的 key。ImgBB 和 PicGo.net 的 key 分别保存在 macOS 钥匙串，打开应用或切换平台时自动读取。应用记住上次选择的平台；清空输入框会删除该平台保存的 key。后端在日志和报告中隐藏当前 key。
+开始迁移前填写所选平台的 key。ImgBB 和 PicGo.net 的 key 分别保存在 macOS 钥匙串，打开应用或切换平台时自动读取。应用记住上次选择的平台；清空输入框会删除该平台保存的 key。后端在活动消息中隐藏当前 key。
 
 ## 图片处理规则
 
@@ -70,7 +68,7 @@
 | ImgBB | JPEG、PNG、BMP、GIF、WebP、AVIF、HEIC／HEIF、TIFF；可解码的 SVG、JPEG 2000、ICO、PSD | 32,000,000 字节 |
 | PicGo.net | JPEG、PNG、BMP、GIF、WebP、AVIF | 25,000,000 字节 |
 
-格式通过图片数据识别。平台资料：[ImgBB 上传页](https://imgbb.com/)、[ImgBB API](https://api.imgbb.com/)、[PicGo.net 上传页](https://www.picgo.net/)。
+格式通过图片数据识别。上传统一采用无限期保存，关闭自动删除。平台资料：[ImgBB 上传页](https://imgbb.com/)、[ImgBB API](https://api.imgbb.com/)、[PicGo.net 上传页](https://www.picgo.net/)。
 
 ## 完整流程图
 
@@ -111,17 +109,18 @@ flowchart TD
     P --> Q{还有图片且未停止？}
     X --> Q
     Q -- 是 --> E
-    Q -- 否 --> R[汇总；导出报告或重试失败]
+    Q -- 否 --> R[显示结果；按需重试失败]
+    R --> S[按需将缓存和备份移到废纸篓]
 ```
 
 ## 缓存、重试和文档写入
 
-- URL 缓存及处理后内容去重按平台、模式、大小上限和规则版本隔离，缓存记录在有效期内可复用。
+- URL 缓存及处理后内容去重按平台、模式、大小上限和规则版本隔离，复用永久上传记录。
 - 上传和重试共享每分钟最多 50 次的限速器。平台限流时暂停后重试，网络及服务器失败采用有次数上限的退避。
-- 上传成功或有符合条件的缓存，且文档与扫描或上次成功写入时一致时，替换链接。已上传结果保存在缓存／报告中。
-- 开启备份时，每次任务首次修改文档前在状态目录保存备份，写入采用临时文件及原子替换。
+- 上传成功或有符合条件的缓存，且文档与扫描或上次成功写入时一致时，替换链接。已上传链接保存在缓存和图片详情中。
+- 开启备份时，每次任务首次修改文档前保存原文，用于恢复原始链接和文字。写入采用临时文件及原子替换。
 - 停止或退出时等待安全位置，保留已完成结果。修改输入、平台或域名筛选后需要重新扫描。
-- 图片在内存中处理。URL／内容映射、备份及导出报告保存在设置的目录中。
+- 图片在内存中处理。URL／内容映射和文档备份保存在状态目录。点击 **Clear Cache and Backups** 并确认后，将 `state.json` 和 `backups/` 移到废纸篓，可从废纸篓恢复；清理后，后续任务会重新上传匹配的图片。
 
 ## 源码构建
 

@@ -67,13 +67,11 @@ struct ImageRow: Identifiable {
         }
     }
     @Published var mode = "size_limit"
-    @Published var includeHosts = ""
-    @Published var excludeHosts = "xhscdn"
-    @Published var expiration = "0"
+    @Published var includeHosts = "xhscdn"
+    @Published var excludeHosts = ""
     @Published var retries = 3
     @Published var backup = true
     @Published var stateDir = ""
-    @Published var reportPath = ""
     @Published var rows: [ImageRow] = []
     @Published var disabledHosts: Set<String> = []
     @Published var busy = false
@@ -83,7 +81,6 @@ struct ImageRow: Identifiable {
     @Published var log = ""
     @Published var completed = 0
     @Published var total = 0
-    @Published var report: [String: Any]?
     private var scannedSignature = ""
     private var loadingKey = false
     private var process: Process?
@@ -107,8 +104,8 @@ struct ImageRow: Identifiable {
     var settings: [String: Any] {
         ["targets": targets, "provider": provider == "imgbb" ? "imgbb" : "chevereto",
          "apiKey": apiKey, "mode": mode,
-         "includeHosts": includeHosts, "excludeHosts": excludeHosts, "expiration": Int(expiration) ?? -1,
-         "retries": retries, "backup": backup, "stateDir": stateDir, "reportPath": reportPath]
+         "includeHosts": includeHosts, "excludeHosts": excludeHosts,
+         "retries": retries, "backup": backup, "stateDir": stateDir]
     }
     var signature: String {
         [targets.joined(separator: "\n"), provider, includeHosts, excludeHosts].joined(separator: "\u{0}")
@@ -138,21 +135,19 @@ struct ImageRow: Identifiable {
             if forState { stateDir = path } else { add([path]) }
         }
     }
-    func chooseReportPath() {
-        let panel = NSSavePanel()
-        panel.allowedContentTypes = [.json]
-        panel.nameFieldStringValue = "migration-report.json"
-        if panel.runModal() == .OK { reportPath = panel.url?.path ?? "" }
-    }
-    func exportReport() {
-        guard let report else { return }
-        let panel = NSSavePanel()
-        panel.allowedContentTypes = [.json]
-        panel.nameFieldStringValue = "migration-report.json"
-        if panel.runModal() == .OK, let url = panel.url {
-            do { try JSONSerialization.data(withJSONObject: report, options: [.prettyPrinted, .sortedKeys]).write(to: url, options: .atomic) }
-            catch { status = "Report export failed: \(error.localizedDescription)" }
-        }
+    func clearLocalData() {
+        guard !busy else { return }
+        let root = stateDir.isEmpty
+            ? FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0].appendingPathComponent("IMG Link Migrator")
+            : URL(fileURLWithPath: (stateDir as NSString).expandingTildeInPath)
+        let paths = ["state.json", "backups"].map { root.appendingPathComponent($0) }
+            .filter { FileManager.default.fileExists(atPath: $0.path) }
+        guard !paths.isEmpty else { status = "No local cache or backups to clear."; return }
+        guard confirm("Clear cache and backups?", "Move these paths to Trash:\n\n" + paths.map(\.path).joined(separator: "\n"), accept: "Move to Trash") else { return }
+        do {
+            for path in paths { try FileManager.default.trashItem(at: path, resultingItemURL: nil) }
+            status = "Local cache and backups moved to Trash."
+        } catch { status = "Cannot clear local data: \(error.localizedDescription)" }
     }
     func confirm(_ title: String, _ message: String, accept: String) -> Bool {
         let alert = NSAlert()
@@ -165,7 +160,6 @@ struct ImageRow: Identifiable {
     func scan() {
         rows = []
         disabledHosts = []
-        report = nil
         scannedSignature = ""
         log = ""
         send("scan")
@@ -284,10 +278,8 @@ struct ImageRow: Identifiable {
             }
             completed = event["current"] as? Int ?? completed
         case "done":
-            report = event["report"] as? [String: Any]
-            let r = report ?? [:]
-            let failures = (r["failed_urls"] as? [String: Any])?.count ?? 0
-            status = "\((r["cancelled"] as? Bool ?? false) ? "Stopped" : "Finished"): \(r["uploaded_urls"] as? Int ?? 0) uploaded, \(r["cached_urls"] as? Int ?? 0) cached, \(failures) failed; \((r["updated_files"] as? [String])?.count ?? 0) files updated."
+            let r = event["summary"] as? [String: Any] ?? [:]
+            status = "\((r["cancelled"] as? Bool ?? false) ? "Stopped" : "Finished"): \(r["uploaded_urls"] as? Int ?? 0) uploaded, \(r["cached_urls"] as? Int ?? 0) cached, \(r["failed_urls"] as? Int ?? 0) failed; \(r["updated_files"] as? Int ?? 0) files updated."
             if let backupPath = r["backup_dir"] as? String { appendLog("Backups: " + backupPath) }
         case "error": status = message; appendLog(message)
         case "idle":
@@ -389,21 +381,15 @@ struct MigratorView: View {
                 Grid(alignment: .leading, horizontalSpacing: 14, verticalSpacing: 8) {
                     GridRow {
                         Text("Include domains")
-                        TextField("All domains; comma-separated filter", text: $model.includeHosts)
+                        TextField("xhscdn; clear to include all domains", text: $model.includeHosts)
                         Text("Exclude domains")
-                        TextField("Comma-separated domains or xhscdn", text: $model.excludeHosts)
+                        TextField("Optional comma-separated domains", text: $model.excludeHosts)
                     }
                     GridRow {
-                        Text("Delete after (seconds)")
-                        TextField("0 = never", text: $model.expiration)
                         Text("Automatic retries")
                         Stepper("\(model.retries)", value: $model.retries, in: 0...10)
-                    }
-                    GridRow {
                         Text("State directory")
                         HStack { TextField("Default: Application Support", text: $model.stateDir); Button("Choose…") { model.chooseDirectory(forState: true) } }
-                        Text("Automatic JSON report")
-                        HStack { TextField("Optional output path", text: $model.reportPath); Button("Choose…") { model.chooseReportPath() } }
                     }
                 }.padding(.top, 6)
             }.disabled(model.busy)
@@ -413,7 +399,7 @@ struct MigratorView: View {
                 Button("Retry Failed") { model.migrate(retry: true) }.disabled(model.busy || model.failedURLs.isEmpty || !model.canMigrate)
                 Button("Stop") { model.stop() }.disabled(!model.busy || model.stopping)
                 Spacer()
-                Button("Export Report…") { model.exportReport() }.disabled(model.report == nil || model.busy)
+                Button("Clear Cache and Backups…") { model.clearLocalData() }.disabled(model.busy)
             }
             if !model.domains.isEmpty {
                 GroupBox("Select source domains") {

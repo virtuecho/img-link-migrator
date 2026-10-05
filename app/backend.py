@@ -15,7 +15,6 @@ class Service:
     def __init__(self):
         self.plans = None
         self.scan_signature = None
-        self.report = None
         self.failed_urls = set()
         self.cancel = threading.Event()
         self.worker = None
@@ -64,7 +63,7 @@ class Service:
                 return
             config = request.get("settings", {})
             provider = config.get("provider", "imgbb")
-            include = core._parse_hosts([config.get("includeHosts", "")])
+            include = core._parse_hosts([config.get("includeHosts", "xhscdn")])
             exclude = core._parse_hosts([config.get("excludeHosts", "")]) + core._provider_excluded_hosts(provider)
             targets = [pathlib.Path(p) for p in config.get("targets", [])]
             signature = self.signature(config)
@@ -75,7 +74,6 @@ class Service:
                 self.scan_signature = signature
                 refs = [r for p in self.plans for r in p.references]
                 urls = list(dict.fromkeys(r.url for r in refs))
-                self.report = None
                 self.failed_urls.clear()
                 self.emit({"kind": "scan_done", "files": len(self.plans), "references": len(refs),
                            "urls": urls, "items": [dataclasses.asdict(r) | {"path": str(r.path)} for r in refs]})
@@ -84,28 +82,24 @@ class Service:
                 raise core.MigrationError("Unknown app request.")
             if self.plans is None or signature != self.scan_signature:
                 raise core.MigrationError("Settings changed. Scan again before migrating.")
-            expiration = int(config.get("expiration", 0))
             retries = int(config.get("retries", 3))
-            client = core._create_upload_client(provider, self.secret, expiration, retries, self.emit, self.cancel)
+            client = core._create_upload_client(provider, self.secret, retries, self.emit, self.cancel)
             store = core.StateStore(pathlib.Path(config["stateDir"]) if config.get("stateDir") else None)
             selected = set(request.get("selectedURLs", []))
             if action == "retry":
                 selected &= self.failed_urls
             processor = ImageProcessor(provider, config.get("mode", "size_limit"), cancel=self.cancel)
-            report_path = pathlib.Path(config["reportPath"]).expanduser() if config.get("reportPath") else None
-            if report_path and any(report_path.resolve() == plan.path.resolve() for plan in self.plans):
-                raise core.MigrationError("The report path must not replace an input document.")
             engine = core.MigrationEngine(store, client, include, exclude, self.emit, self.cancel,
-                                          expiration, config.get("backup", True), image_processor=processor)
-            self.report = engine.run(targets, True, selected, self.plans)
+                                          backup_enabled=config.get("backup", True), image_processor=processor)
+            summary = engine.run(targets, True, selected, self.plans)
             if action == "migrate":
                 self.failed_urls.clear()
             self.failed_urls.difference_update(selected)
-            self.failed_urls.update(self.report.failed_urls)
-            report = self.clean(self.report.as_dict())
-            self.emit({"kind": "done", "report": report})
-            if report_path:
-                core._atomic_write(report_path, json.dumps(report, indent=2) + "\n")
+            self.failed_urls.update(summary.failed_urls)
+            self.emit({"kind": "done", "summary": {
+                "uploaded_urls": summary.uploaded_urls, "cached_urls": summary.cached_urls,
+                "failed_urls": len(summary.failed_urls), "updated_files": len(summary.updated_files),
+                "cancelled": summary.cancelled, "backup_dir": summary.backup_dir}})
         except Exception as exc:
             self.emit({"kind": "error", "message": str(exc)})
         finally:

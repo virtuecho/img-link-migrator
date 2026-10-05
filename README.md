@@ -22,7 +22,7 @@ Unzip and drag `IMG Link Migrator.app` to Applications.
 3. Choose an image mode and any advanced options. **Size Limit** and document backups are enabled by default.
 4. Click **Scan**. Review the files, image URLs, counts, and source domains, then uncheck domains to skip.
 5. Click **Start Migration**. In confirmation dialogs, **Return accepts** and **Escape cancels**.
-6. Review each image's status, output format, size, dimensions, and encoding quality. Retry failed items or export the JSON report.
+6. Review each image's status, output format, size, dimensions, and encoding quality. Retry failed items as needed.
 
 Images are recognized in inline Markdown, referenced Markdown images whose definitions are used, and HTML `<img>` tags. Bare image URLs are recognized only in `.txt` files. Frontmatter, fenced code blocks, and inline code are skipped. The app preserves existing link text and document structure.
 
@@ -34,19 +34,17 @@ Images are recognized in inline Markdown, referenced Markdown images whose defin
 | API key | Entered in the app's secure field; saved in macOS Keychain |
 | Image mode | Size Limit |
 | Back up documents | Enabled |
-| Include domains | Empty: all otherwise eligible domains; comma-separated |
-| Exclude domains | `xhscdn`; comma-separated; destination service domains also excluded |
+| Include domains | `xhscdn`: match host names containing this keyword; clear to include all eligible domains; comma-separated |
+| Exclude domains | Empty; comma-separated; destination service domains also excluded |
 | Source domain selection | All scanned domains enabled; uncheck a domain to skip |
 | Show URLs | Enabled; turn off to show host names instead |
-| Delete after (seconds) | 0: never; otherwise 60–15,552,000 seconds, subject to service support |
 | Automatic retries | 3; adjustable from 0 to 10 |
 | State directory | `~/Library/Application Support/IMG Link Migrator` |
-| Automatic JSON report | Empty; optionally choose an output file |
-| Export Report | Save the latest run report after a task finishes |
+| Clear Cache and Backups | Move the upload cache and document backups in the state directory to Trash; available while idle |
 | Retry Failed | Retry failed images selected by the current domain filters |
 | Stop | Stop starting new images; finish the current operation at a safe point |
 
-Enter the key for the selected platform before starting migration. ImgBB and PicGo.net keys are stored separately in macOS Keychain and restored when the app opens or the platform changes. The last selected platform is remembered. Clearing the key field removes that platform's saved key. The backend redacts the current key from logs and reports.
+Enter the key for the selected platform before starting migration. ImgBB and PicGo.net keys are stored separately in macOS Keychain and restored when the app opens or the platform changes. The last selected platform is remembered. Clearing the key field removes that platform's saved key. The backend redacts the current key from activity messages.
 
 ## Image rules
 
@@ -70,7 +68,7 @@ Dimensions stay at their original values until the shrink step. AVIF output supp
 | ImgBB | JPEG, PNG, BMP, GIF, WebP, AVIF, HEIC/HEIF, TIFF; decodable SVG, JPEG 2000, ICO and PSD | 32,000,000 bytes |
 | PicGo.net | JPEG, PNG, BMP, GIF, WebP, AVIF | 25,000,000 bytes |
 
-Formats are identified from image data. Service references: [ImgBB uploader](https://imgbb.com/), [ImgBB API](https://api.imgbb.com/), [PicGo.net uploader](https://www.picgo.net/).
+Formats are identified from image data. Uploads use indefinite retention, with automatic deletion disabled. Service references: [ImgBB uploader](https://imgbb.com/), [ImgBB API](https://api.imgbb.com/), [PicGo.net uploader](https://www.picgo.net/).
 
 ## Workflow
 
@@ -111,17 +109,18 @@ flowchart TD
     P --> Q{More images and not stopped?}
     X --> Q
     Q -- Yes --> E
-    Q -- No --> R[Summarize; export report or retry failures]
+    Q -- No --> R[Show results; retry failures as needed]
+    R --> S[Optionally move cache and backups to Trash]
 ```
 
 ## Cache, retries, and document writes
 
-- URL and processed-content caches are separated by platform, image mode, upload cap, and processing rule version. Expiring entries are reused while still valid.
+- URL and processed-content caches are separated by platform, image mode, upload cap, and processing rule version. Only permanent upload entries are reused.
 - Upload attempts, including retries, share a limiter of at most 50 per minute. Platform throttling triggers a pause before retrying. Network and server failures use the existing bounded backoff.
-- Links are replaced after successful upload or a valid cached result, when the document matches its scan or last successful write. Uploaded URLs remain available in the cache/report.
-- Enabled backups preserve each document before the task's first change, under the state directory. Writes use a temporary file and atomic replacement.
+- Links are replaced after successful upload or a valid cached result, when the document matches its scan or last successful write. Uploaded URLs remain available in the cache and image details.
+- Enabled backups preserve each document before the task's first change, so the original links and text can be restored. Writes use a temporary file and atomic replacement.
 - Stop/quit waits for a safe point. Completed uploads and writes are kept. A scan is required again after changing input files, platform, or domain filters.
-- Images are processed in memory. URL/content mappings, backups, and exported reports remain in their configured locations.
+- Images are processed in memory. URL/content mappings and document backups are stored in the state directory. **Clear Cache and Backups** moves `state.json` and `backups/` to Trash after confirmation. Restoring these items from Trash restores the local records; clearing them makes later tasks upload matching images again.
 
 ## Build from source
 
