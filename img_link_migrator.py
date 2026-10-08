@@ -676,8 +676,6 @@ class BaseUploadClient:
                             raise MigrationError("Image exceeds the 100 MB download limit.")
                         chunks.append(chunk)
                     data = b"".join(chunks)
-                    if not data:
-                        raise MigrationError("Downloaded image is empty.")
                     content_type, extension = _media_type(
                         response.headers.get("Content-Type", ""), url
                     )
