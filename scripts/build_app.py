@@ -9,11 +9,12 @@ import shutil
 import subprocess
 import tarfile
 import urllib.request
+import os
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 BUILD = ROOT / "build"
 DIST = ROOT / "dist"
-VERSION = "1.0.0"
+VERSION = "1.1.0"
 PYTHON_RELEASE = "20261003"
 PYTHON_VERSION = "3.13.16"
 PYTHON_HASHES = {
@@ -25,6 +26,8 @@ VIPS_HASHES = {
     "arm64": "ffe78b7072bfdb043cd38642aa487ace4452141b94db3fb5c078440a027d9277",
     "x86_64": "50f61425b0eb034d46a8fdf1142663ab68c69933ae1d23064829714b2f0e955c",
 }
+AVIF_VERSION = "1.3.0"
+AVIF_HASH = "0a545e953cc049bf5bcf4ee467306a2f113a75110edf59e61248873101cd26c1"
 
 
 def run(args, **kwargs):
@@ -41,6 +44,44 @@ def download(url, path, digest=None):
     if digest and hashlib.sha256(path.read_bytes()).hexdigest() != digest:
         path.unlink()
         raise RuntimeError("Downloaded archive checksum mismatch: " + path.name)
+
+
+def build_codecs(architecture, python):
+    codecs = BUILD / ("codecs-" + architecture)
+    codecs.mkdir(exist_ok=True)
+    archive = BUILD / f"libavif-{AVIF_VERSION}.tar.gz"
+    download(f"https://github.com/AOMediaCodec/libavif/archive/refs/tags/v{AVIF_VERSION}.tar.gz", archive, AVIF_HASH)
+    source_root = BUILD / ("avif-source-" + architecture)
+    source = source_root / ("libavif-" + AVIF_VERSION)
+    if not source.exists():
+        source_root.mkdir(exist_ok=True)
+        with tarfile.open(archive) as tar:
+            tar.extractall(source_root, filter="data")
+    # Forward architecture/deployment settings to libjpeg's separate build.
+    recipe = source / "cmake/Modules/LocalJpeg.cmake"
+    text = recipe.read_text()
+    if "-DWITH_SIMD=OFF" not in text:
+        recipe.write_text(text.replace("CMAKE_ARGS -DCMAKE_C_COMPILER=", f"CMAKE_ARGS -DCMAKE_OSX_ARCHITECTURES={architecture} -DCMAKE_OSX_DEPLOYMENT_TARGET=13.0 -DWITH_SIMD=OFF -DCMAKE_C_COMPILER="))
+    cmake = python.parent / "cmake"
+    binary = BUILD / ("avif-build-" + architecture)
+    run([cmake, "-S", source, "-B", binary, "-DCMAKE_BUILD_TYPE=Release", "-DBUILD_SHARED_LIBS=OFF",
+         "-DAVIF_BUILD_APPS=ON", "-DAVIF_BUILD_TESTS=OFF", "-DAVIF_CODEC_AOM=LOCAL",
+         "-DAVIF_CODEC_AOM_DECODE=OFF", "-DAVIF_LIBYUV=OFF", "-DAVIF_ZLIBPNG=LOCAL", "-DAVIF_JPEG=LOCAL",
+         "-DAVIF_LIBXML2=OFF", "-DENABLE_ASM=OFF", f"-DAOM_TARGET_CPU={architecture}",
+         f"-DCMAKE_OSX_ARCHITECTURES={architecture}", "-DCMAKE_OSX_DEPLOYMENT_TARGET=13.0"])
+    run([cmake, "--build", binary, "--target", "avifenc", "--parallel", min(os.cpu_count() or 2, 8)])
+    shutil.copy2(binary / "avifenc", codecs / "avifenc")
+    run(["xcrun", "swiftc", "-O", "-target", architecture + "-apple-macosx13.0", ROOT / "app/HDRDecode.swift",
+         "-o", codecs / "hdr-decode", "-framework", "CoreImage", "-framework", "CoreGraphics"])
+    notices = codecs / "Licenses"
+    notices.mkdir(exist_ok=True)
+    for label, directory in (("libavif", source), ("dependencies", binary / "_deps"), ("libjpeg", binary / "libjpeg/src/libjpeg")):
+        for path in directory.rglob("*"):
+            if path.is_file() and any(word in path.name.lower() for word in ("license", "copying", "patent", "readme.ijg")):
+                target = notices / label / path.relative_to(directory)
+                target.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(path, target)
+    return codecs
 
 
 def build(architecture, identity=None, notary_profile=None):
@@ -64,7 +105,8 @@ def build(architecture, identity=None, notary_profile=None):
         run(prefix + [python, "-m", "venv", environment])
     python = environment / "bin/python"
     run(prefix + [python, "-m", "pip", "install", "--disable-pip-version-check",
-                  "pyvips[binary]==3.2.0", "pyvips-binary==8.18.7", "Pillow==12.3.0", "pi-heif==1.4.0", "pyinstaller==6.16.0"])
+                  "pyvips[binary]==3.2.0", "pyvips-binary==8.18.7", "Pillow==12.3.0", "pi-heif==1.4.0", "pyinstaller==6.16.0", "cmake==3.31.6"])
+    codecs = build_codecs(architecture, python)
     sites = json.loads(run(prefix + [python, "-c", "import site,json; print(json.dumps(site.getsitepackages()))"],
                            capture_output=True, text=True).stdout)
     site = pathlib.Path(next(p for p in sites if (pathlib.Path(p) / "pyvips_binary.dylibs").exists()))
@@ -99,6 +141,9 @@ def build(architecture, identity=None, notary_profile=None):
                 target.unlink()
             shutil.move(library, target)
         directory.rmdir()
+    for name in ("avifenc", "hdr-decode"):
+        shutil.copy2(codecs / name, internal / name)
+    shutil.copytree(codecs / "Licenses", licenses / "libavif")
     run(["xcrun", "swiftc", "-parse-as-library", "-O", "-target", architecture + "-apple-macosx13.0",
          ROOT / "app/MigratorApp.swift", "-o", executable, "-framework", "SwiftUI", "-framework", "AppKit", "-framework", "Security"])
     info = {
@@ -106,7 +151,7 @@ def build(architecture, identity=None, notary_profile=None):
         "CFBundleIdentifier": "io.github.virtuecho.img-link-migrator",
         "CFBundleDevelopmentRegion": "en", "CFBundleLocalizations": ["en"],
         "CFBundleExecutable": "IMG Link Migrator", "CFBundlePackageType": "APPL",
-        "CFBundleShortVersionString": VERSION, "CFBundleVersion": "1",
+        "CFBundleShortVersionString": VERSION, "CFBundleVersion": "2",
         "LSMinimumSystemVersion": "13.0", "NSHighResolutionCapable": True,
         "LSApplicationCategoryType": "public.app-category.utilities",
         "NSPrincipalClass": "NSApplication",
@@ -137,13 +182,15 @@ def build(architecture, identity=None, notary_profile=None):
     # App-only sources make replacement/rebuilding of LGPL-linked components practical.
     sources = resources / "Source"
     sources.mkdir()
-    for name in ("img_link_migrator.py", "image_processing.py", "app/backend.py", "app/MigratorApp.swift", "scripts/build_app.py", "pyproject.toml", "README.md", "README_CN.md", "LICENSE", "THIRD_PARTY.md"):
+    for name in ("img_link_migrator.py", "image_processing.py", "app/backend.py", "app/MigratorApp.swift", "app/HDRDecode.swift", "scripts/build_app.py", "pyproject.toml", "README.md", "README_CN.md", "LICENSE", "THIRD_PARTY.md"):
         target = sources / name
         target.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(ROOT / name, target)
     sign = ["codesign", "--force", "--deep", "--sign", identity or "-"]
     if identity:
         sign += ["--options", "runtime", "--timestamp"]
+    for name in ("avifenc", "hdr-decode"):
+        run(sign + [internal / name])
     run(sign + [destination])
     run(["codesign", "--verify", "--deep", "--strict", destination])
     package = DIST / f"IMG-Link-Migrator-{VERSION}-{architecture}.zip"

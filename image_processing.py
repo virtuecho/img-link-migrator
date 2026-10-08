@@ -163,11 +163,11 @@ class ImageProcessor:
         with tempfile.TemporaryDirectory(prefix="img-link-avif-") as folder:
             input_path = pathlib.Path(folder) / "source.png"
             output_path = pathlib.Path(folder) / "output.avif"
-            source.pngsave(input_path, bitdepth=16 if bits > 8 else 8)
+            source.pngsave(str(input_path), bitdepth=16 if bits > 8 else 8)
             args = [codec_path("avifenc"), "--speed", 6, "--jobs", 4, "--depth", bits,
                     "--yuv", "444" if lossless else sampling, "--range", "full", "--qalpha", 100]
             args += ["--lossless"] if lossless else ["--qcolor", quality]
-            if profile and profile[:4] != b"\x00\x02\x00\x02":
+            if profile:
                 primaries = int.from_bytes(profile[:2], "big")
                 transfer = int.from_bytes(profile[2:4], "big")
                 matrix = 0 if lossless else 9 if primaries == 9 else 1 if primaries == 1 else 6
@@ -233,13 +233,28 @@ class ImageProcessor:
         profile = primary_nclx(data) if fmt in {"heic", "avif"} else None
         decoded = None
         gainmap = bool(source.get_typeof("gainmap-data")) or source.get_gainmap() is not None
-        if fmt in {"heic", "avif"}:
+        if fmt == "heic":
             import pi_heif
             decoded = pi_heif.open_heif(data, convert_hdr_to_8bit=False, hdr_to_16bit=True)
             metadata = decoded[decoded.primary_index].info
             gainmap = gainmap or any("hdrgainmap" in kind or "hdrgm" in kind or "21496" in kind for kind in metadata.get("aux", {}))
+        elif fmt == "avif":
+            ftyp = next((box for box in boxes(data) if box[0] == b"ftyp"), None)
+            if ftyp:
+                _, start, end = ftyp
+                brands = [data[start:start + 4]] + [data[pos:pos + 4] for pos in range(start + 8, end, 4)]
+                gainmap = gainmap or b"tmap" in brands
         hdr = gainmap or bool(profile and int.from_bytes(profile[2:4], "big") in {16, 18})
-        detail["hdr"] = hdr
+        bits = int(source.get("bits-per-sample")) if source.get_typeof("bits-per-sample") else (16 if source.format == "ushort" else 8)
+        chroma = container_chroma(data) if fmt in {"avif", "heic"} else None
+        if source.get_typeof("jpeg-chroma-subsample"):
+            chroma = source.get("jpeg-chroma-subsample").replace(":", "")
+        detail.update(hdr=hdr, bit_depth=bits, source_chroma=chroma or "RGB")
+        if profile:
+            detail.update(color_primaries=int.from_bytes(profile[:2], "big"),
+                          transfer_characteristics=int.from_bytes(profile[2:4], "big"),
+                          color_matrix=int.from_bytes(profile[4:6], "big"),
+                          color_range="full" if profile[6] & 128 else "limited")
         if fmt in self.formats and len(data) <= self.limit:
             return self.result(data, fmt, filename, detail, "original")
         if source.width * source.height > 100_000_000:
@@ -247,8 +262,9 @@ class ImageProcessor:
         animated_png = fmt == "png" and b"acTL" in data and b"acTL" in data[:data.find(b"IDAT")]
         if animated_png or (source.get_typeof("n-pages") and source.get("n-pages") > 1) or (fmt == "avif" and b"avis" in data[:64]):
             raise ValueError("Animated/multi-image compression would lose frames.")
-        bits = int(source.get("bits-per-sample")) if source.get_typeof("bits-per-sample") else (16 if source.format == "ushort" else 8)
         if gainmap:
+            if fmt == "avif":
+                raise ValueError("AVIF gain-map conversion is unavailable; keep the original HDR data.")
             source = self.expand_hdr(data, source, fmt == "jpeg")
             bits = 12
             profile = bytes.fromhex("00090010000980")
@@ -274,10 +290,7 @@ class ImageProcessor:
             raise ValueError("This input bit depth cannot be retained in AVIF or WebP.")
         if source.interpretation in {"cmyk", "lab", "labs", "scRGB"}:
             raise ValueError("This color space cannot be safely retained by the bundled encoder.")
-        chroma = container_chroma(data) if fmt in {"avif", "heic"} else None
-        if source.get_typeof("jpeg-chroma-subsample"):
-            chroma = source.get("jpeg-chroma-subsample").replace(":", "")
-        detail.update(bit_depth=bits, source_chroma=chroma or "RGB", orientation="preserved")
+        detail.update(bit_depth=bits, orientation="preserved", color_range="full")
         if profile:
             detail.update(color_primaries=int.from_bytes(profile[:2], "big"),
                           transfer_characteristics=int.from_bytes(profile[2:4], "big"))
@@ -300,6 +313,8 @@ class ImageProcessor:
                 pass
         if candidates:
             encoded, fmt, method = min(candidates, key=lambda item: len(item[0]))
+            if fmt == "avif":
+                detail.update(output_chroma="444", color_matrix=0)
             return self.result(encoded, fmt, filename, detail, method)
         sampling = "420" if chroma == "420" else "444"
         scale = 1.0
@@ -314,7 +329,8 @@ class ImageProcessor:
                     raise ValueError("AVIF encoding failed: " + str(exc)) from None
                 if len(encoded) <= self.limit:
                     detail.update(width=current.width, height=current.height, quality=quality,
-                                  output_chroma=sampling)
+                                  output_chroma=sampling,
+                                  color_matrix=9 if profile and profile[:2] == b"\x00\x09" else 1 if profile and profile[:2] == b"\x00\x01" else 6)
                     return self.result(encoded, "avif", filename, detail, "lossy_avif")
             if min(current.width, current.height) <= 16:
                 break
@@ -326,6 +342,6 @@ class ImageProcessor:
         extension = "jpg" if fmt == "jpeg" else fmt
         mime = {"svg": "image/svg+xml", "ico": "image/x-icon", "heic": "image/heic"}.get(fmt, "image/" + fmt)
         detail = {**detail, "bytes": len(data), "format": fmt, "method": method}
-        if fmt in {"heic", "avif"}:
-            detail["output_chroma"] = container_chroma(data)
+        if method == "original" and "source_chroma" in detail:
+            detail["output_chroma"] = detail["source_chroma"]
         return PreparedImage(data, mime, pathlib.Path(filename).stem + "." + extension, detail)
