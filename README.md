@@ -59,7 +59,7 @@ A supported image already within its target limit uses the original file. Otherw
 
 Compression stops after at most 32 dimension levels or when the smaller dimension reaches 16 pixels. Decode failures, conversion failures, animations, and unmet size targets fall back to uploading downloaded bytes unchanged, including damaged or oversized originals. There is no additional full-decode validation or output recheck. Download, upload, or document-write failures retain the original link. Download size is separately capped at 100,000,000 bytes; images requiring processing are capped at 100 megapixels. The size limit applies to the encoded image file, before the upload form is assembled.
 
-Dimensions remain unchanged until the shrink step. AVIF supports 8, 10, and 12 bits and alpha; only ordinary 8-bit SDR images are eligible for WebP.
+Dimensions remain unchanged until the shrink step. AVIF supports 8, 10, and 12 bits and alpha; only ordinary 8-bit SDR images without NCLX are eligible for WebP.
 
 - HDR JPEG/HEIC gain maps are recovered into HDR pixels and encoded as **12-bit BT.2020 / PQ AVIF**. HDR JPEG originals within the target are uploaded unchanged. HEIC gain-map conversion requires macOS 14 or later.
 - Existing PQ/HLG AVIF retains its primaries and transfer function. AVIF gain-map recoding is unavailable; the original is still attempted when it cannot fit unchanged.

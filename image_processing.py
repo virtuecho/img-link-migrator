@@ -232,7 +232,7 @@ class ImageProcessor:
                   "width": source.width, "height": source.height}
         profile = primary_nclx(data) if fmt in {"heic", "avif"} else None
         decoded = None
-        gainmap = bool(source.get_typeof("gainmap-data")) or source.get_gainmap() is not None
+        gainmap = bool(source.get_typeof("gainmap-data") or source.get_typeof("gainmap"))
         if fmt == "heic":
             import pi_heif
             decoded = pi_heif.open_heif(data, convert_hdr_to_8bit=False, hdr_to_16bit=True)
@@ -302,7 +302,8 @@ class ImageProcessor:
                 candidates.append((encoded, "avif", "lossless_avif"))
         except (pyvips.Error, ValueError, OSError):
             pass
-        ordinary_color = profile is None or profile[:4] in {b"\x00\x01\x00\x0d", b"\x00\x02\x00\x02"}
+        # WebP has no NCLX container; explicit NCLX sources stay in AVIF.
+        ordinary_color = profile is None
         if bits == 8 and ordinary_color and not hdr:
             self.check_cancel()
             try:
