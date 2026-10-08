@@ -26,7 +26,7 @@ from typing import Callable, Dict, Iterable, List, Optional, Sequence, Set, Tupl
 
 
 APP_NAME = "IMG Link Migrator"
-APP_VERSION = "1.1.0"
+APP_VERSION = "1.1.1"
 DEFAULT_PROVIDER = "imgbb"
 IMGBB_CACHE_NAMESPACE = "imgbb"
 PICGO_BASE_URL = "https://www.picgo.net"

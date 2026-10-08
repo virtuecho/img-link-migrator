@@ -10,8 +10,8 @@ Requires macOS 13 or later. Choose the **single-architecture** download for your
 
 | Download | Mac |
 | --- | --- |
-| `IMG-Link-Migrator-1.1.0-arm64.zip` | Apple Silicon: M1 and later |
-| `IMG-Link-Migrator-1.1.0-x86_64.zip` | Intel |
+| `IMG-Link-Migrator-1.1.1-arm64.zip` | Apple Silicon: M1 and later |
+| `IMG-Link-Migrator-1.1.1-x86_64.zip` | Intel |
 
 Unzip and drag `IMG Link Migrator.app` to Applications.
 

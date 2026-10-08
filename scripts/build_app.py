@@ -14,7 +14,7 @@ import os
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 BUILD = ROOT / "build"
 DIST = ROOT / "dist"
-VERSION = "1.1.0"
+VERSION = "1.1.1"
 PYTHON_RELEASE = "20261003"
 PYTHON_VERSION = "3.13.16"
 PYTHON_HASHES = {
@@ -151,7 +151,7 @@ def build(architecture, identity=None, notary_profile=None):
         "CFBundleIdentifier": "io.github.virtuecho.img-link-migrator",
         "CFBundleDevelopmentRegion": "en", "CFBundleLocalizations": ["en"],
         "CFBundleExecutable": "IMG Link Migrator", "CFBundlePackageType": "APPL",
-        "CFBundleShortVersionString": VERSION, "CFBundleVersion": "2",
+        "CFBundleShortVersionString": VERSION, "CFBundleVersion": "3",
         "LSMinimumSystemVersion": "13.0", "NSHighResolutionCapable": True,
         "LSApplicationCategoryType": "public.app-category.utilities",
         "NSPrincipalClass": "NSApplication",

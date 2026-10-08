@@ -479,60 +479,65 @@ struct MigratorView: View {
                     }
                 }.disabled(model.busy)
             }
-            VSplitView {
-                VStack(alignment: .leading, spacing: 8) {
-                    HStack {
-                        Text("\(model.selectedURLs.count) selected images").font(.headline)
-                        Spacer()
-                        Picker("Sort by", selection: $sortField) {
-                            ForEach(sortFields, id: \.self) { Text($0).tag($0) }
-                        }.frame(width: 220)
-                            .onChange(of: sortField) { sortOrder = [sortBy($0)] }
-                        Button {
-                            sortOrder = sortOrder.map { var comparator = $0; comparator.order = comparator.order == .forward ? .reverse : .forward; return comparator }
-                        } label: { Image(systemName: "arrow.up.arrow.down") }.help("Reverse sort order")
-                        Button("Copy All") {
-                            NSPasteboard.general.clearContents()
-                            NSPasteboard.general.setString(model.rows.sorted(using: sortOrder).map(\.copyText).joined(separator: "\n\n"), forType: .string)
-                        }
-                    }
-                    Table(model.rows.sorted(using: sortOrder), selection: $imageSelection, sortOrder: $sortOrder) {
-                        TableColumn("Image / Document", value: \.url) { row in
-                            VStack(alignment: .leading, spacing: 2) {
-                                Text(row.url).lineLimit(1).help(row.url)
-                                Text(row.file).font(.caption).foregroundStyle(.secondary).lineLimit(1).help(row.file)
-                            }
-                        }.width(min: 200, ideal: 420)
-                        TableColumn("Status", value: \.status) { row in
-                            Text(row.status).foregroundStyle(row.status == "Failed" ? .red : .primary)
-                        }.width(90)
-                        TableColumn("Details", value: \.detail) { row in
-                            Text(row.detail).font(.caption).lineLimit(2).help(row.copyText)
-                        }.width(min: 180, ideal: 320)
-                    }.textSelection(.enabled)
-                        .contextMenu(forSelectionType: ImageRow.ID.self) { selection in
-                            Button("Copy Image Details") {
+            GeometryReader { available in
+                VSplitView {
+                    VStack(alignment: .leading, spacing: 8) {
+                        HStack {
+                            Text("\(model.selectedURLs.count) selected images").font(.headline)
+                            Spacer()
+                            Picker("Sort by", selection: $sortField) {
+                                ForEach(sortFields, id: \.self) { Text($0).tag($0) }
+                            }.frame(width: 220)
+                                .onChange(of: sortField) { sortOrder = [sortBy($0)] }
+                            Button {
+                                sortOrder = sortOrder.map { var comparator = $0; comparator.order = comparator.order == .forward ? .reverse : .forward; return comparator }
+                            } label: { Image(systemName: "arrow.up.arrow.down") }.help("Reverse sort order")
+                            Button("Copy All") {
                                 NSPasteboard.general.clearContents()
-                                NSPasteboard.general.setString(model.rows.filter { selection.contains($0.id) }.map(\.copyText).joined(separator: "\n\n"), forType: .string)
-                            }.disabled(selection.isEmpty)
+                                NSPasteboard.general.setString(model.rows.sorted(using: sortOrder).map(\.copyText).joined(separator: "\n\n"), forType: .string)
+                            }
                         }
-                }.frame(minHeight: 150)
-                VStack(alignment: .leading, spacing: 8) {
-                    if model.busy {
-                        if model.total > 0 { ProgressView(value: Double(model.completed), total: Double(model.total)) }
-                        else { ProgressView().controlSize(.small) }
-                    }
-                    Text(model.status).font(.callout).textSelection(.enabled).lineLimit(3)
-                    if !model.log.isEmpty {
-                        DisclosureGroup("Activity Log") {
-                            ScrollView {
-                                Text(model.log).font(.system(.caption, design: .monospaced)).textSelection(.enabled)
-                                    .frame(maxWidth: .infinity, alignment: .leading)
-                            }.frame(minHeight: 40, maxHeight: .infinity)
+                        Table(model.rows.sorted(using: sortOrder), selection: $imageSelection, sortOrder: $sortOrder) {
+                            TableColumn("Image / Document", value: \.url) { row in
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text(row.url).lineLimit(1).help(row.url)
+                                    Text(row.file).font(.caption).foregroundStyle(.secondary).lineLimit(1).help(row.file)
+                                }
+                            }.width(min: 200, ideal: 420)
+                            TableColumn("Status", value: \.status) { row in
+                                Text(row.status).foregroundStyle(row.status == "Failed" ? .red : .primary)
+                            }.width(90)
+                            TableColumn("Details", value: \.detail) { row in
+                                Text(row.detail).font(.caption).lineLimit(2).help(row.copyText)
+                            }.width(min: 180, ideal: 320)
+                        }.frame(maxWidth: .infinity, maxHeight: .infinity)
+                            .textSelection(.enabled)
+                            .contextMenu(forSelectionType: ImageRow.ID.self) { selection in
+                                Button("Copy Image Details") {
+                                    NSPasteboard.general.clearContents()
+                                    NSPasteboard.general.setString(model.rows.filter { selection.contains($0.id) }.map(\.copyText).joined(separator: "\n\n"), forType: .string)
+                                }.disabled(selection.isEmpty)
+                            }
+                    }.frame(width: available.size.width)
+                        .frame(minHeight: 190, maxHeight: .infinity, alignment: .topLeading)
+                    VStack(alignment: .leading, spacing: 8) {
+                        if model.busy {
+                            if model.total > 0 { ProgressView(value: Double(model.completed), total: Double(model.total)) }
+                            else { ProgressView().controlSize(.small) }
                         }
-                    }
-                }.padding(.top, 8).frame(minHeight: 60, maxHeight: .infinity, alignment: .topLeading)
-            }
+                        Text(model.status).font(.callout).textSelection(.enabled).lineLimit(3)
+                        if !model.log.isEmpty {
+                            DisclosureGroup("Activity Log") {
+                                ScrollView {
+                                    Text(model.log).font(.system(.caption, design: .monospaced)).textSelection(.enabled)
+                                        .frame(maxWidth: .infinity, alignment: .leading)
+                                }.frame(minHeight: 40, maxHeight: .infinity)
+                            }
+                        }
+                    }.padding(.top, 8).frame(width: available.size.width, alignment: .leading)
+                        .frame(minHeight: 60, maxHeight: .infinity, alignment: .topLeading)
+                }.frame(width: available.size.width, height: available.size.height)
+            }.frame(minHeight: 260).layoutPriority(1)
         }.padding(20).frame(minWidth: 880, minHeight: 690)
     }
 }
