@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import dataclasses
+from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, TimeoutError, wait
 import datetime as dt
 import hashlib
 import json
@@ -25,7 +26,7 @@ from typing import Callable, Dict, Iterable, List, Optional, Sequence, Set, Tupl
 
 
 APP_NAME = "IMG Link Migrator"
-APP_VERSION = "1.0.0"
+APP_VERSION = "1.1.0"
 DEFAULT_PROVIDER = "imgbb"
 IMGBB_CACHE_NAMESPACE = "imgbb"
 PICGO_BASE_URL = "https://www.picgo.net"
@@ -82,8 +83,41 @@ def _is_upload_rate_error(message: str) -> bool:
     normalized = message.lower()
     return any(
         marker in normalized
-        for marker in ("flood", "rate limit", "too many requests")
+        for marker in ("flood", "rate limit", "too many requests", "http 429", "concurrent", "simultaneous uploads", "parallel uploads")
     )
+
+
+class AdaptiveConcurrency:
+    """Probe up to 16 workers; stop probing after the host refuses concurrency."""
+
+    def __init__(self, callback):
+        self.limit = 1
+        self.probing = True
+        self.successes = 0
+        self.callback = callback
+        self.lock = threading.Lock()
+
+    def succeeded(self):
+        with self.lock:
+            if not self.probing or self.limit == 16:
+                return
+            self.successes += 1
+            if self.successes < self.limit:
+                return
+            self.successes = 0
+            self.limit = min(16, self.limit + 2)
+            self._notify("Successful uploads; increasing concurrency.")
+
+    def refused(self):
+        with self.lock:
+            self.probing = False
+            self.successes = 0
+            self.limit = max(1, self.limit - 1)
+            self._notify("Host throttled uploads; holding the reduced concurrency for this run.")
+
+    def _notify(self, message):
+        _notify(self.callback, kind="concurrency", workers=self.limit,
+                message=f"{self.limit} workers. {message}")
 
 
 def _is_duplicate_upload_error(message: str) -> bool:
@@ -567,6 +601,7 @@ class BaseUploadClient:
         self.callback = callback
         self.cancel_event = cancel_event or threading.Event()
         self.upload_rate_limiter = UploadRateLimiter()
+        self.on_upload_throttle = None
         if not self.api_key:
             raise MigrationError(
                 "Enter your {} API key in the app.".format(self.provider_name)
@@ -590,13 +625,15 @@ class BaseUploadClient:
                 raise
             except Exception as exc:  # Network/protocol failures become user-facing.
                 last_error = exc
+                throttled = stage == "Upload" and _is_upload_rate_error(str(exc))
+                if throttled:
+                    self.upload_rate_limiter.defer(UPLOAD_RATE_COOLDOWN_SECONDS)
+                    if self.on_upload_throttle:
+                        self.on_upload_throttle()
                 if attempt > self.retries:
                     break
-                if stage == "Upload" and _is_upload_rate_error(str(exc)):
-                    delay = UPLOAD_RATE_COOLDOWN_SECONDS
-                    self.upload_rate_limiter.defer(delay)
-                else:
-                    delay = min(8.0, 2 ** (attempt - 1)) + random.random() * 0.25
+                delay = (UPLOAD_RATE_COOLDOWN_SECONDS if throttled else
+                         min(8.0, 2 ** (attempt - 1)) + random.random() * 0.25)
                 _notify(
                     self.callback,
                     kind="retry",
@@ -917,7 +954,7 @@ class MigrationEngine:
         backup: Optional[BackupSession],
         backed_up_paths: Set[pathlib.Path],
     ) -> List[str]:
-        """Immediately replace one completed URL before the next upload starts."""
+        """Replace completed links on the coordinator thread."""
 
         errors: List[str] = []
         for plan in plans:
@@ -1038,135 +1075,99 @@ class MigrationEngine:
 
         backup = BackupSession(self.store.root) if self.backup_enabled else None
         backed_up_paths: Set[pathlib.Path] = set()
-        try:
-            for index, url in enumerate(urls, 1):
+        concurrency = AdaptiveConcurrency(self.callback)
+        self.client.on_upload_throttle = concurrency.refused
+        # Decoders can need several full-size floating-point pixel buffers.
+        processing_slots = threading.Semaphore(2)
+        content_lock = threading.Lock()
+        content_uploads = {}
+        first_paths = {ref.url: str(ref.path) for ref in reversed(all_refs)}
+
+        def transfer(url):
+            try:
                 if self.cancel_event.is_set():
                     raise CancelledError("Task cancelled.")
-                first_ref = next(ref for ref in all_refs if ref.url == url)
-                _notify(
-                    self.callback,
-                    kind="url_start",
-                    url=url,
-                    path=str(first_ref.path),
-                    current=index,
-                    total=len(urls),
-                )
-                cached = self.store.lookup_url(
-                    url, namespace=self.cache_namespace
-                )
+                cached = self.store.lookup_url(url, namespace=self.cache_namespace)
                 if cached:
-                    result = UrlResult(
-                        url, cached, "cached", "Reused local migration cache."
-                    )
-                    report.cached_urls += 1
-                    write_errors = self._write_completed_url(
-                        url,
-                        result,
-                        plans,
-                        report,
-                        backup,
-                        backed_up_paths,
-                    )
-                    if write_errors:
-                        result.status = "failed"
-                        result.detail = (
-                            "Cached URL is ready, but Markdown write failed: {}"
-                        ).format(
-                            "; ".join(write_errors)
-                        )
-                        report.failed_urls[url] = result.detail
-                    _notify(
-                        self.callback,
-                        kind="url_done",
-                        url=url,
-                        path=str(first_ref.path),
-                        status=result.status,
-                        new_url=cached,
-                        message=result.detail,
-                        current=index,
-                        total=len(urls),
-                    )
-                    continue
-                try:
-                    data, content_type, filename = self.client.download(url)
-                    if self.image_processor:
+                    return UrlResult(url, cached, "cached", "Reused local migration cache.")
+                data, content_type, filename = self.client.download(url)
+                if self.image_processor:
+                    with processing_slots:
                         prepared = self.image_processor.prepare(data, filename, content_type)
-                        data, content_type, filename = prepared.data, prepared.content_type, prepared.filename
-                        _notify(self.callback, kind="image_prepared", url=url, **prepared.detail)
-                    digest = hashlib.sha256(data).hexdigest()
-                    hash_cached = self.store.lookup_hash(
-                        digest, namespace=self.cache_namespace
-                    )
-                    if hash_cached:
-                        self.store.record(
-                            url,
-                            digest,
-                            hash_cached,
-                            namespace=self.cache_namespace,
-                        )
-                        result = UrlResult(
-                            url,
-                            hash_cached,
-                            "cached",
-                            "Reused an uploaded image with identical content.",
-                        )
-                        report.cached_urls += 1
-                    else:
-                        new_url = self.client.upload(
-                            data, content_type, filename, url
-                        )
-                        self.store.record(
-                            url,
-                            digest,
-                            new_url,
-                            namespace=self.cache_namespace,
-                        )
-                        result = UrlResult(url, new_url, "uploaded", "Upload succeeded.")
-                        report.uploaded_urls += 1
-                    write_errors = self._write_completed_url(
-                        url,
-                        result,
-                        plans,
-                        report,
-                        backup,
-                        backed_up_paths,
-                    )
-                    if write_errors:
-                        result.status = "failed"
-                        result.detail = (
-                            "Image is ready, but Markdown write failed: {}"
-                        ).format(
-                            "; ".join(write_errors)
-                        )
-                        report.failed_urls[url] = result.detail
-                    _notify(
-                        self.callback,
-                        kind="url_done",
-                        url=url,
-                        path=str(first_ref.path),
-                        status=result.status,
-                        new_url=result.new_url,
-                        message=result.detail,
-                        current=index,
-                        total=len(urls),
-                    )
-                except CancelledError:
-                    raise
-                except Exception as exc:
-                    result = UrlResult(url, None, "failed", str(exc))
-                    report.failed_urls[url] = str(exc)
-                    _notify(
-                        self.callback,
-                        kind="url_done",
-                        url=url,
-                        path=str(first_ref.path),
-                        status="failed",
-                        message=str(exc),
-                        current=index,
-                        total=len(urls),
-                    )
-        except CancelledError:
-            report.cancelled = True
+                    data, content_type, filename = prepared.data, prepared.content_type, prepared.filename
+                    _notify(self.callback, kind="image_prepared", url=url, **prepared.detail)
+                digest = hashlib.sha256(data).hexdigest()
+                with content_lock:
+                    cached = self.store.lookup_hash(digest, namespace=self.cache_namespace)
+                    owner = digest not in content_uploads and not cached
+                    upload = content_uploads.setdefault(digest, Future())
+                if cached:
+                    new_url = cached
+                elif owner:
+                    try:
+                        new_url = self.client.upload(data, content_type, filename, url)
+                        self.store.record(url, digest, new_url, namespace=self.cache_namespace)
+                        upload.set_result(new_url)
+                    except Exception as exc:
+                        upload.set_exception(exc)
+                        with content_lock:
+                            content_uploads.pop(digest, None)
+                        raise
+                    return UrlResult(url, new_url, "uploaded", "Upload succeeded.")
+                else:
+                    while True:
+                        if self.cancel_event.is_set():
+                            raise CancelledError("Task cancelled.")
+                        try:
+                            new_url = upload.result(timeout=0.2)
+                            break
+                        except TimeoutError:
+                            continue
+                self.store.record(url, digest, new_url, namespace=self.cache_namespace)
+                return UrlResult(url, new_url, "cached", "Reused an uploaded image with identical content.")
+            except CancelledError:
+                return UrlResult(url, None, "cancelled", "Task cancelled.")
+            except Exception as exc:
+                return UrlResult(url, None, "failed", str(exc))
+
+        next_index = 0
+        completed = 0
+        pending = {}
+        try:
+            with ThreadPoolExecutor(max_workers=16, thread_name_prefix="image-upload") as pool:
+                while pending or (next_index < len(urls) and not self.cancel_event.is_set()):
+                    while (next_index < len(urls) and len(pending) < concurrency.limit
+                           and not self.cancel_event.is_set()):
+                        url = urls[next_index]
+                        next_index += 1
+                        _notify(self.callback, kind="url_start", url=url, path=first_paths[url],
+                                current=next_index, total=len(urls))
+                        pending[pool.submit(transfer, url)] = url
+                    if not pending:
+                        break
+                    done, _ = wait(pending, timeout=0.2, return_when=FIRST_COMPLETED)
+                    for task in done:
+                        url = pending.pop(task)
+                        result = task.result()
+                        completed += 1
+                        if result.status == "uploaded":
+                            report.uploaded_urls += 1
+                            concurrency.succeeded()
+                        elif result.status == "cached":
+                            report.cached_urls += 1
+                        if result.succeeded:
+                            errors = self._write_completed_url(url, result, plans, report, backup, backed_up_paths)
+                            if errors:
+                                result.status = "failed"
+                                result.detail = "Image is ready, but document write failed: " + "; ".join(errors)
+                        if result.status == "failed":
+                            report.failed_urls[url] = result.detail
+                        _notify(self.callback, kind="url_done", url=url, path=first_paths[url],
+                                status=result.status, new_url=result.new_url, message=result.detail,
+                                current=completed, total=len(urls))
+        finally:
+            self.client.on_upload_throttle = None
+        report.cancelled = self.cancel_event.is_set()
 
         # Carry our own writes into the scanned plans used by a later retry.
         for plan in plans:
