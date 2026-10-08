@@ -49,6 +49,31 @@ struct ImageRow: Identifiable {
     var status = "Pending"
     var detail = ""
     var newURL = ""
+    var attributes: [String: String] = [:]
+    var format: String { attributes["format"] ?? "" }
+    var bytes: Int { Int(attributes["bytes"] ?? "") ?? 0 }
+    var originalBytes: Int { Int(attributes["original_bytes"] ?? "") ?? 0 }
+    var width: Int { Int(attributes["width"] ?? "") ?? 0 }
+    var height: Int { Int(attributes["height"] ?? "") ?? 0 }
+    var quality: Int { Int(attributes["quality"] ?? "") ?? 0 }
+    var bitDepth: Int { Int(attributes["bit_depth"] ?? "") ?? 0 }
+    var primaries: Int { Int(attributes["color_primaries"] ?? "") ?? 0 }
+    var transfer: Int { Int(attributes["transfer_characteristics"] ?? "") ?? 0 }
+    var matrix: Int { Int(attributes["color_matrix"] ?? "") ?? 0 }
+    var range: String { attributes["color_range"] ?? "" }
+    var hdr: String { attributes["hdr"] ?? "" }
+    var method: String { attributes["method"] ?? "" }
+    var sourceChroma: String { attributes["source_chroma"] ?? "" }
+    var outputChroma: String { attributes["output_chroma"] ?? "" }
+    var originalFormat: String { attributes["original_format"] ?? "" }
+    var orientation: String { attributes["orientation"] ?? "" }
+    var hdrRepresentation: String { attributes["hdr_representation"] ?? "" }
+    var warning: String { attributes["warning"] ?? "" }
+    var copyText: String {
+        ([url, file, "Status: " + status, detail, newURL]
+         + attributes.keys.sorted().map { "\($0): \(attributes[$0]!)" })
+            .filter { !$0.isEmpty }.joined(separator: "\n")
+    }
 }
 
 @MainActor final class MigratorModel: ObservableObject {
@@ -76,7 +101,6 @@ struct ImageRow: Identifiable {
     @Published var disabledHosts: Set<String> = []
     @Published var busy = false
     @Published var stopping = false
-    @Published var showURLs = true
     @Published var status = "Add documents or folders, then scan."
     @Published var log = ""
     @Published var completed = 0
@@ -266,6 +290,8 @@ struct ImageRow: Identifiable {
             status = "Processing image \(event["current"] as? Int ?? 0) of \(total)…"
         case "image_prepared":
             if let i = rows.firstIndex(where: { $0.url == url }) {
+                rows[i].attributes = event.filter { !["kind", "url"].contains($0.key) }
+                    .mapValues { String(describing: $0) }
                 let size = ByteCountFormatter.string(fromByteCount: Int64(event["bytes"] as? Int ?? 0), countStyle: .file)
                 let quality = event["quality"] as? Int
                 let width = event["width"] as? Int ?? 0
@@ -322,6 +348,40 @@ struct ImageRow: Identifiable {
 struct MigratorView: View {
     @ObservedObject var model: MigratorModel
     @State private var advanced = false
+    @State private var sortOrder = [KeyPathComparator(\ImageRow.url)]
+    @State private var imageSelection: Set<String> = []
+    @State private var sortField = "URL"
+    private let sortFields = ["URL", "Document", "Status", "Details", "Format", "Bytes", "Original bytes", "Width", "Height", "Quality", "Bit depth", "HDR", "Method", "Color primaries", "Transfer", "Color matrix", "Color range", "Source chroma", "Output chroma", "Original format", "Orientation", "HDR representation", "Warning", "Uploaded URL"]
+
+    func sortBy(_ field: String) -> KeyPathComparator<ImageRow> {
+        switch field {
+        case "Document": return KeyPathComparator(\.file)
+        case "Status": return KeyPathComparator(\.status)
+        case "Details": return KeyPathComparator(\.detail)
+        case "Format": return KeyPathComparator(\.format)
+        case "Bytes": return KeyPathComparator(\.bytes)
+        case "Original bytes": return KeyPathComparator(\.originalBytes)
+        case "Width": return KeyPathComparator(\.width)
+        case "Height": return KeyPathComparator(\.height)
+        case "Quality": return KeyPathComparator(\.quality)
+        case "Bit depth": return KeyPathComparator(\.bitDepth)
+        case "HDR": return KeyPathComparator(\.hdr)
+        case "Method": return KeyPathComparator(\.method)
+        case "Color primaries": return KeyPathComparator(\.primaries)
+        case "Transfer": return KeyPathComparator(\.transfer)
+        case "Color matrix": return KeyPathComparator(\.matrix)
+        case "Color range": return KeyPathComparator(\.range)
+        case "Source chroma": return KeyPathComparator(\.sourceChroma)
+        case "Output chroma": return KeyPathComparator(\.outputChroma)
+        case "Original format": return KeyPathComparator(\.originalFormat)
+        case "Orientation": return KeyPathComparator(\.orientation)
+        case "HDR representation": return KeyPathComparator(\.hdrRepresentation)
+        case "Warning": return KeyPathComparator(\.warning)
+        case "Uploaded URL": return KeyPathComparator(\.newURL)
+        default: return KeyPathComparator(\.url)
+        }
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             HStack {
@@ -377,7 +437,7 @@ struct MigratorView: View {
                         Text("Size Limit — below 1 MB").tag("size_limit")
                         Text("Original Upload").tag("original")
                     }
-                    Text(model.mode == "size_limit" ? "Lossless first; AVIF Q80 → Q70; shrink 15% only when necessary." : "Keep supported originals up to \(model.provider == "imgbb" ? 32 : 25) MB; process larger or unsupported images.")
+                    Text(model.mode == "size_limit" ? "Target <1 MB; HDR → AVIF; Q80 → Q70; shrink 15%. Processing failures upload the original." : "Keep supported originals up to \(model.provider == "imgbb" ? 32 : 25) MB; process when needed, otherwise upload the original.")
                         .font(.caption).foregroundStyle(.secondary)
                     Toggle("Back up documents before writing", isOn: $model.backup)
                 }
@@ -396,8 +456,8 @@ struct MigratorView: View {
                         Text("State directory")
                         HStack { TextField("Default: Application Support", text: $model.stateDir); Button("Choose…") { model.chooseDirectory(forState: true) } }
                     }
-                }.padding(.top, 6)
-            }.disabled(model.busy)
+                }.padding(.top, 6).disabled(model.busy)
+            }
             HStack {
                 Button("Scan") { model.scan() }.disabled(model.busy || model.targets.isEmpty)
                 Button("Start Migration") { model.migrate() }.disabled(!model.canMigrate)
@@ -419,30 +479,59 @@ struct MigratorView: View {
                     }
                 }.disabled(model.busy)
             }
-            HStack {
-                Text("\(model.selectedURLs.count) selected images").font(.headline)
-                Spacer()
-                Toggle("Show URLs", isOn: $model.showURLs).toggleStyle(.checkbox)
-            }
-            Table(model.rows) {
-                TableColumn("Image / Document") { row in
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text(model.showURLs ? row.url : row.host).lineLimit(1).help(row.url)
-                        Text(row.file).font(.caption).foregroundStyle(.secondary).lineLimit(1).help(row.file)
+            VSplitView {
+                VStack(alignment: .leading, spacing: 8) {
+                    HStack {
+                        Text("\(model.selectedURLs.count) selected images").font(.headline)
+                        Spacer()
+                        Picker("Sort by", selection: $sortField) {
+                            ForEach(sortFields, id: \.self) { Text($0).tag($0) }
+                        }.frame(width: 220)
+                            .onChange(of: sortField) { sortOrder = [sortBy($0)] }
+                        Button {
+                            sortOrder = sortOrder.map { var comparator = $0; comparator.order = comparator.order == .forward ? .reverse : .forward; return comparator }
+                        } label: { Image(systemName: "arrow.up.arrow.down") }.help("Reverse sort order")
+                        Button("Copy All") {
+                            NSPasteboard.general.clearContents()
+                            NSPasteboard.general.setString(model.rows.sorted(using: sortOrder).map(\.copyText).joined(separator: "\n\n"), forType: .string)
+                        }
+                    }
+                    Table(model.rows.sorted(using: sortOrder), selection: $imageSelection, sortOrder: $sortOrder) {
+                        TableColumn("Image / Document", value: \.url) { row in
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(row.url).lineLimit(1).help(row.url)
+                                Text(row.file).font(.caption).foregroundStyle(.secondary).lineLimit(1).help(row.file)
+                            }
+                        }.width(min: 200, ideal: 420)
+                        TableColumn("Status", value: \.status) { row in
+                            Text(row.status).foregroundStyle(row.status == "Failed" ? .red : .primary)
+                        }.width(90)
+                        TableColumn("Details", value: \.detail) { row in
+                            Text(row.detail).font(.caption).lineLimit(2).help(row.copyText)
+                        }.width(min: 180, ideal: 320)
                     }.textSelection(.enabled)
-                }.width(min: 200, ideal: 420)
-                TableColumn("Status") { row in Text(row.status).foregroundStyle(row.status == "Failed" ? .red : .primary) }.width(90)
-                TableColumn("Details") { row in Text(row.detail).font(.caption).lineLimit(2).help(row.detail + (row.newURL.isEmpty ? "" : "\n" + row.newURL)) }.width(min: 180, ideal: 320)
-            }.frame(minHeight: 130)
-            if model.busy {
-                if model.total > 0 { ProgressView(value: Double(model.completed), total: Double(model.total)) }
-                else { ProgressView().controlSize(.small) }
-            }
-            Text(model.status).font(.callout).textSelection(.enabled).lineLimit(3)
-            if !model.log.isEmpty {
-                DisclosureGroup("Activity Log") {
-                    ScrollView { Text(model.log).font(.system(.caption, design: .monospaced)).textSelection(.enabled).frame(maxWidth: .infinity, alignment: .leading) }.frame(height: 85)
-                }
+                        .contextMenu(forSelectionType: ImageRow.ID.self) { selection in
+                            Button("Copy Image Details") {
+                                NSPasteboard.general.clearContents()
+                                NSPasteboard.general.setString(model.rows.filter { selection.contains($0.id) }.map(\.copyText).joined(separator: "\n\n"), forType: .string)
+                            }.disabled(selection.isEmpty)
+                        }
+                }.frame(minHeight: 150)
+                VStack(alignment: .leading, spacing: 8) {
+                    if model.busy {
+                        if model.total > 0 { ProgressView(value: Double(model.completed), total: Double(model.total)) }
+                        else { ProgressView().controlSize(.small) }
+                    }
+                    Text(model.status).font(.callout).textSelection(.enabled).lineLimit(3)
+                    if !model.log.isEmpty {
+                        DisclosureGroup("Activity Log") {
+                            ScrollView {
+                                Text(model.log).font(.system(.caption, design: .monospaced)).textSelection(.enabled)
+                                    .frame(maxWidth: .infinity, alignment: .leading)
+                            }.frame(minHeight: 40, maxHeight: .infinity)
+                        }
+                    }
+                }.padding(.top, 8).frame(minHeight: 60, maxHeight: .infinity, alignment: .topLeading)
             }
         }.padding(20).frame(minWidth: 880, minHeight: 690)
     }
