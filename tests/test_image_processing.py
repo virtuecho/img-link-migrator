@@ -50,8 +50,9 @@ class ImagePolicyTests(unittest.TestCase):
         self.assertEqual(decoded.get("bits-per-sample"), 10)
         pos = next(nclx_positions(result.data))
         self.assertEqual(result.data[pos:pos + 4], bytes.fromhex("00090010"))
-        with self.assertRaises(ValueError):
-            processor.prepare(b"not an image", "bad.jpg")
+        damaged = processor.prepare(b"not an image", "bad.jpg", "image/jpeg")
+        self.assertEqual(damaged.data, b"not an image")
+        self.assertEqual(damaged.detail["method"], "original_fallback")
         from PIL import Image
         buffer = io.BytesIO()
         Image.new("RGB", (32, 24), "red").save(buffer, format="BMP")
@@ -59,8 +60,10 @@ class ImagePolicyTests(unittest.TestCase):
         buffer = io.BytesIO()
         Image.new("RGB", (32, 24), "red").save(buffer, format="PNG", save_all=True,
               append_images=[Image.new("RGB", (32, 24), "blue")], duration=100)
-        with self.assertRaises(ValueError):
-            ImageProcessor().prepare(buffer.getvalue() + bytes(1_000_000), "animated.png")
+        original = buffer.getvalue() + bytes(1_000_000)
+        animated = ImageProcessor().prepare(original, "animated.png", "image/png")
+        self.assertEqual(animated.data, original)
+        self.assertEqual(animated.detail["method"], "original_fallback")
 
     def test_retry_keeps_our_writes_but_rejects_external_edits(self):
         with tempfile.TemporaryDirectory() as folder:
