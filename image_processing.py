@@ -1,8 +1,12 @@
-"""Two size policies backed by bundled libvips, libheif, WebP, and AV1 codecs."""
+"""AVIF/WebP processing with HDR support and an original-byte fallback."""
 import dataclasses
 import pathlib
 import io
 import threading
+import platform
+import subprocess
+import sys
+import tempfile
 
 POLICY_VERSION = "v2-hdr-original-fallback"
 DOWNLOAD_LIMIT = 100_000_000
@@ -43,18 +47,62 @@ def nclx_positions(data):
         start = pos + 8
 
 
-def preserve_nclx(data, profile):
-    if profile is None:
-        return data
-    positions = list(nclx_positions(data))
-    if not positions:
-        raise ValueError("The encoder cannot retain this NCLX color profile.")
-    output = bytearray(data)
-    for pos in positions:
-        # Retain primaries/transfer. Matrix/range describe the newly encoded YUV
-        # or RGB values and must remain those selected by the encoder.
-        output[pos:pos + 4] = profile[:4]
-    return bytes(output)
+def boxes(data, start=0, end=None):
+    """Read container boxes for metadata, without decoding image pixels."""
+    end = len(data) if end is None else end
+    while start + 8 <= end:
+        size = int.from_bytes(data[start:start + 4], "big")
+        header = 8
+        if size == 1:
+            size = int.from_bytes(data[start + 8:start + 16], "big")
+            header = 16
+        elif size == 0:
+            size = end - start
+        if size < header or start + size > end:
+            raise ValueError("Unreadable image container metadata.")
+        yield data[start + 4:start + 8], start + header, start + size
+        start += size
+
+
+def primary_nclx(data):
+    """Read NCLX associated with the primary item, excluding auxiliary images."""
+    meta = next((box for box in boxes(data) if box[0] == b"meta"), None)
+    if not meta:
+        return None
+    children = list(boxes(data, meta[1] + 4, meta[2]))
+    pitm = next(box for box in children if box[0] == b"pitm")
+    primary = int.from_bytes(data[pitm[1] + 4:pitm[2]], "big")
+    iprp = next(box for box in children if box[0] == b"iprp")
+    properties = list(boxes(data, iprp[1], iprp[2]))
+    ipco = next(box for box in properties if box[0] == b"ipco")
+    entries = list(boxes(data, ipco[1], ipco[2]))
+    for _, start, end in (box for box in properties if box[0] == b"ipma"):
+        version = data[start]
+        wide = int.from_bytes(data[start + 1:start + 4], "big") & 1
+        count = int.from_bytes(data[start + 4:start + 8], "big")
+        pos = start + 8
+        for _ in range(count):
+            item_bytes = 4 if version else 2
+            item = int.from_bytes(data[pos:pos + item_bytes], "big")
+            pos += item_bytes
+            associations = data[pos]
+            pos += 1
+            for _ in range(associations):
+                width = 2 if wide else 1
+                index = int.from_bytes(data[pos:pos + width], "big") & (0x7fff if wide else 0x7f)
+                pos += width
+                if pos > end:
+                    raise ValueError("Unreadable image property association.")
+                if item == primary and index:
+                    kind, begin, finish = entries[index - 1]
+                    if kind == b"colr" and data[begin:begin + 4] == b"nclx" and finish - begin >= 11:
+                        return data[begin + 4:begin + 11]
+    return None
+
+
+def codec_path(name):
+    root = pathlib.Path(sys._MEIPASS) if getattr(sys, "frozen", False) else pathlib.Path(__file__).parent / "build" / ("codecs-" + platform.machine())
+    return root / name
 
 
 class ImageProcessor:
@@ -72,6 +120,61 @@ class ImageProcessor:
         if self.cancel.is_set():
             from img_link_migrator import CancelledError
             raise CancelledError("Task cancelled.")
+
+    def run_codec(self, args):
+        self.check_cancel()
+        with tempfile.TemporaryFile() as errors:
+            process = subprocess.Popen([str(arg) for arg in args], stdout=subprocess.DEVNULL, stderr=errors)
+            try:
+                while True:
+                    self.check_cancel()
+                    try:
+                        code = process.wait(timeout=.2)
+                        break
+                    except subprocess.TimeoutExpired:
+                        continue
+            except BaseException:
+                process.kill()
+                process.wait()
+                raise
+            if code:
+                errors.seek(0)
+                raise ValueError(errors.read().decode("utf-8", "replace")[-2000:].strip() or "Image codec failed.")
+
+    def expand_hdr(self, data, source, jpeg):
+        """Use native color management to render recovered HDR into PQ pixels."""
+        import pyvips
+        with tempfile.TemporaryDirectory(prefix="img-link-hdr-") as folder:
+            input_path = pathlib.Path(folder) / "source"
+            output_path = pathlib.Path(folder) / "pq.png"
+            args = [codec_path("hdr-decode"), input_path, output_path]
+            if jpeg:
+                linear = source.uhdr2scRGB()
+                if linear.bands == 3:
+                    linear = linear.bandjoin(1.0)
+                input_path.write_bytes(linear.cast("float").write_to_memory())
+                args += [linear.width, linear.height]
+            else:
+                input_path.write_bytes(data)
+            self.run_codec(args)
+            return pyvips.Image.new_from_buffer(output_path.read_bytes(), "", access="random")
+
+    def encode_avif(self, source, bits, profile, sampling, lossless=False, quality=80):
+        with tempfile.TemporaryDirectory(prefix="img-link-avif-") as folder:
+            input_path = pathlib.Path(folder) / "source.png"
+            output_path = pathlib.Path(folder) / "output.avif"
+            source.pngsave(input_path, bitdepth=16 if bits > 8 else 8)
+            args = [codec_path("avifenc"), "--speed", 6, "--jobs", 4, "--depth", bits,
+                    "--yuv", "444" if lossless else sampling, "--range", "full", "--qalpha", 100]
+            args += ["--lossless"] if lossless else ["--qcolor", quality]
+            if profile and profile[:4] != b"\x00\x02\x00\x02":
+                primaries = int.from_bytes(profile[:2], "big")
+                transfer = int.from_bytes(profile[2:4], "big")
+                matrix = 0 if lossless else 9 if primaries == 9 else 1 if primaries == 1 else 6
+                args += ["--cicp", f"{primaries}/{transfer}/{matrix}"]
+            args += [input_path, output_path]
+            self.run_codec(args)
+            return output_path.read_bytes()
 
     def prepare(self, data, filename, content_type="application/octet-stream"):
         from img_link_migrator import CancelledError
@@ -127,28 +230,37 @@ class ImageProcessor:
             fmt = loader.removeprefix("fallback-")
         detail = {"original_bytes": len(data), "original_format": fmt or loader,
                   "width": source.width, "height": source.height}
+        profile = primary_nclx(data) if fmt in {"heic", "avif"} else None
+        decoded = None
+        gainmap = bool(source.get_typeof("gainmap-data")) or source.get_gainmap() is not None
+        if fmt in {"heic", "avif"}:
+            import pi_heif
+            decoded = pi_heif.open_heif(data, convert_hdr_to_8bit=False, hdr_to_16bit=True)
+            metadata = decoded[decoded.primary_index].info
+            gainmap = gainmap or any("hdrgainmap" in kind or "hdrgm" in kind or "21496" in kind for kind in metadata.get("aux", {}))
+        hdr = gainmap or bool(profile and int.from_bytes(profile[2:4], "big") in {16, 18})
+        detail["hdr"] = hdr
         if fmt in self.formats and len(data) <= self.limit:
             return self.result(data, fmt, filename, detail, "original")
-        if fmt in {"heic", "avif"} and (b"hdrgainmap" in data or b"hdrgm" in data or b"urn:iso:std:iso:ts:21496" in data):
-            raise ValueError("HDR gain-map auxiliary data cannot be retained by this encoder. Original link retained.")
-        profiles = {data[pos:pos + 7] for pos in nclx_positions(data)} if fmt in {"heic", "avif"} else set()
-        if len(profiles) > 1:
-            raise ValueError("Multiple distinct NCLX profiles cannot be retained safely.")
-        profile = next(iter(profiles), None)
         if source.width * source.height > 100_000_000:
             raise ValueError("Image exceeds the 100 megapixel processing limit.")
         animated_png = fmt == "png" and b"acTL" in data and b"acTL" in data[:data.find(b"IDAT")]
         if animated_png or (source.get_typeof("n-pages") and source.get("n-pages") > 1) or (fmt == "avif" and b"avis" in data[:64]):
-            raise ValueError("Animated/multi-image input cannot be compressed without losing frames. Original link retained.")
+            raise ValueError("Animated/multi-image compression would lose frames.")
         bits = int(source.get("bits-per-sample")) if source.get_typeof("bits-per-sample") else (16 if source.format == "ushort" else 8)
-        if fmt == "heic":
+        if gainmap:
+            source = self.expand_hdr(data, source, fmt == "jpeg")
+            bits = 12
+            profile = bytes.fromhex("00090010000980")
+            detail.update(width=source.width, height=source.height, hdr_representation="PQ")
+        elif fmt == "heic":
             # The small libvips wheel reads HEIC headers but has no HEVC decoder.
             # pi-heif adds decoding without an unnecessary HEVC encoder.
-            import pi_heif
-            decoded = pi_heif.open_heif(data, convert_hdr_to_8bit=False, hdr_to_16bit=True)
             if len(decoded) > 1:
                 raise ValueError("Multi-image HEIC cannot be compressed without losing images.")
             image = decoded[decoded.primary_index]
+            metadata = image.info.copy()
+            pi_heif.set_orientation(metadata)
             bands = {"L": 1, "LA": 2, "RGB": 3, "RGBA": 4}.get(image.mode.split(";")[0])
             if not bands:
                 raise ValueError("Unsupported HEIC decoded color layout.")
@@ -156,10 +268,10 @@ class ImageProcessor:
             source = pyvips.Image.new_from_memory(image.data, *image.size, bands, "ushort" if bits > 8 else "uchar")
             source = source.copy(interpretation=("grey16" if bits > 8 else "b-w") if bands <= 2 else ("rgb16" if bits > 8 else "srgb"))
             for original, field in (("icc_profile", "icc-profile-data"), ("exif", "exif-data")):
-                if image.info.get(original):
-                    source.set_type(pyvips.GValue.blob_type, field, image.info[original])
+                if metadata.get(original):
+                    source.set_type(pyvips.GValue.blob_type, field, metadata[original])
         if bits not in (8, 10, 12):
-            raise ValueError("This input bit depth cannot be retained in AVIF or WebP. Original link retained.")
+            raise ValueError("This input bit depth cannot be retained in AVIF or WebP.")
         if source.interpretation in {"cmyk", "lab", "labs", "scRGB"}:
             raise ValueError("This color space cannot be safely retained by the bundled encoder.")
         chroma = container_chroma(data) if fmt in {"avif", "heic"} else None
@@ -172,14 +284,13 @@ class ImageProcessor:
         candidates = []
         self.check_cancel()
         try:
-            encoded = source.heifsave_buffer(compression="av1", lossless=True, bitdepth=bits, effort=4, subsample_mode="off")
-            encoded = preserve_nclx(encoded, profile)
+            encoded = self.encode_avif(source, bits, profile, "444", lossless=True)
             if len(encoded) <= self.limit:
                 candidates.append((encoded, "avif", "lossless_avif"))
-        except pyvips.Error:
+        except (pyvips.Error, ValueError, OSError):
             pass
         ordinary_color = profile is None or profile[:4] in {b"\x00\x01\x00\x0d", b"\x00\x02\x00\x02"}
-        if bits == 8 and ordinary_color:
+        if bits == 8 and ordinary_color and not hdr:
             self.check_cancel()
             try:
                 encoded = source.webpsave_buffer(lossless=True, effort=4)
@@ -190,8 +301,7 @@ class ImageProcessor:
         if candidates:
             encoded, fmt, method = min(candidates, key=lambda item: len(item[0]))
             return self.result(encoded, fmt, filename, detail, method)
-        # libheif supports 420/444 here; 422 is represented as 444 without further subsampling.
-        sampling = "on" if chroma == "420" else "off" if chroma in {"411", "422", "440", "444"} else "auto"
+        sampling = "420" if chroma == "420" else "444"
         scale = 1.0
         for _ in range(32):
             self.check_cancel()
@@ -199,19 +309,17 @@ class ImageProcessor:
             for quality in (80, 70):
                 self.check_cancel()
                 try:
-                    encoded = current.heifsave_buffer(compression="av1", Q=quality, bitdepth=bits,
-                                                      effort=4, subsample_mode=sampling)
-                    encoded = preserve_nclx(encoded, profile)
+                    encoded = self.encode_avif(current, bits, profile, sampling, quality=quality)
                 except pyvips.Error as exc:
                     raise ValueError("AVIF encoding failed: " + str(exc)) from None
                 if len(encoded) <= self.limit:
                     detail.update(width=current.width, height=current.height, quality=quality,
-                                  output_chroma="420" if sampling == "on" else "444" if sampling == "off" else "encoder default")
+                                  output_chroma=sampling)
                     return self.result(encoded, "avif", filename, detail, "lossy_avif")
             if min(current.width, current.height) <= 16:
                 break
             scale *= .85
-        raise ValueError("Image could not meet the size limit. Original link retained.")
+        raise ValueError("Image could not meet the size limit.")
 
     @staticmethod
     def result(data, fmt, filename, detail, method):
