@@ -4,7 +4,7 @@ import pathlib
 import io
 import threading
 
-POLICY_VERSION = "v1-avif-webp-q80-70-shrink85"
+POLICY_VERSION = "v2-hdr-original-fallback"
 DOWNLOAD_LIMIT = 100_000_000
 PLATFORM_LIMITS = {"imgbb": 32_000_000, "chevereto": 25_000_000}
 COMMON_FORMATS = {"jpeg", "png", "bmp", "gif", "webp", "avif"}
@@ -73,7 +73,23 @@ class ImageProcessor:
             from img_link_migrator import CancelledError
             raise CancelledError("Task cancelled.")
 
-    def prepare(self, data, filename):
+    def prepare(self, data, filename, content_type="application/octet-stream"):
+        from img_link_migrator import CancelledError
+        self.check_cancel()
+        try:
+            return self._prepare(data, filename)
+        except CancelledError:
+            raise
+        except Exception as exc:
+            self.check_cancel()
+            return PreparedImage(data, content_type, filename, {
+                "original_bytes": len(data), "bytes": len(data),
+                "format": content_type.removeprefix("image/"),
+                "method": "original_fallback",
+                "warning": "Processing unavailable; uploading original bytes. " + str(exc),
+            })
+
+    def _prepare(self, data, filename):
         import pyvips
         pyvips.cache_set_max(0)
         self.check_cancel()
@@ -88,7 +104,6 @@ class ImageProcessor:
                 fmt = {"jpg": "jpeg", "jpeg2000": "jp2"}.get(image.format.lower(), image.format.lower())
                 detail = {"original_bytes": len(data), "original_format": fmt, "width": image.width, "height": image.height}
                 if fmt in self.formats and len(data) <= self.limit:
-                    image.verify()
                     return self.result(data, fmt, filename, detail, "original")
                 if image.width * image.height > 100_000_000 or getattr(image, "n_frames", 1) > 1:
                     raise ValueError("Multi-frame or oversized decoded image cannot be processed safely.")
@@ -103,7 +118,7 @@ class ImageProcessor:
             except Exception as fallback_error:
                 raise ValueError("Unsupported or invalid image data: " + str(fallback_error)) from None
         loader = source.get("vips-loader")
-        formats = {"jpeg": "jpeg", "png": "png", "webp": "webp", "gif": "gif", "tiff": "tiff",
+        formats = {"jpeg": "jpeg", "uhdr": "jpeg", "png": "png", "webp": "webp", "gif": "gif", "tiff": "tiff",
                    "svg": "svg", "jp2k": "jp2", "jxl": "jxl"}
         fmt = next((value for prefix, value in formats.items() if loader.startswith(prefix)), None)
         if loader.startswith("heif"):

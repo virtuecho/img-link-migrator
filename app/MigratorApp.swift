@@ -268,7 +268,12 @@ struct ImageRow: Identifiable {
             if let i = rows.firstIndex(where: { $0.url == url }) {
                 let size = ByteCountFormatter.string(fromByteCount: Int64(event["bytes"] as? Int ?? 0), countStyle: .file)
                 let quality = event["quality"] as? Int
-                rows[i].detail = "\(event["format"] as? String ?? "") · \(size) · \(event["width"] as? Int ?? 0) × \(event["height"] as? Int ?? 0)" + (quality.map { " · Q\($0)" } ?? " · \(event["method"] as? String ?? "")")
+                let width = event["width"] as? Int ?? 0
+                let height = event["height"] as? Int ?? 0
+                let dimensions = width > 0 && height > 0 ? " · \(width) × \(height)" : ""
+                let hdr = event["hdr"] as? Bool == true ? " · HDR" : ""
+                rows[i].detail = "\(event["format"] as? String ?? "") · \(size)" + dimensions + hdr + (quality.map { " · Q\($0)" } ?? " · \(event["method"] as? String ?? "")")
+                if let warning = event["warning"] as? String { appendLog(warning) }
             }
         case "url_done":
             if let i = rows.firstIndex(where: { $0.url == url }) {

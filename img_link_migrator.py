@@ -1090,7 +1090,7 @@ class MigrationEngine:
                 try:
                     data, content_type, filename = self.client.download(url)
                     if self.image_processor:
-                        prepared = self.image_processor.prepare(data, filename)
+                        prepared = self.image_processor.prepare(data, filename, content_type)
                         data, content_type, filename = prepared.data, prepared.content_type, prepared.filename
                         _notify(self.callback, kind="image_prepared", url=url, **prepared.detail)
                     digest = hashlib.sha256(data).hexdigest()
