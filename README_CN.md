@@ -90,7 +90,7 @@
 
 ## 源码构建
 
-需要 macOS、Xcode Command Line Tools（`xcode-select --install`）、开发用 Python 3.11 或更新版本以及网络。构建 Intel 包还需要 NASM 或 Yasm（例如 `brew install nasm`）；Apple Silicon 上另需 Rosetta 2。Intel Mac 可构建 Intel 包；arm64 包使用 Apple Silicon Mac 构建。
+需要 macOS、Xcode Command Line Tools（`xcode-select --install`）、开发用 Python 3.11 或更新版本以及网络。构建 Intel 包还需要 Yasm 或 NASM 2.x（例如 `brew install yasm`）；Apple Silicon 上另需 Rosetta 2。Intel Mac 可构建 Intel 包；arm64 包使用 Apple Silicon Mac 构建。
 
 ```sh
 python3 scripts/build_app.py --arch arm64

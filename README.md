@@ -90,7 +90,7 @@ Scan → reuse cache or download → use original or compress → fall back to o
 
 ## Build from source
 
-Requires macOS, Xcode Command Line Tools (`xcode-select --install`), a development Python 3.11 or later, and network access. Intel builds also require NASM or Yasm (for example, `brew install nasm`), plus Rosetta 2 on Apple Silicon. Intel Macs build the Intel package; use an Apple Silicon Mac for the arm64 package.
+Requires macOS, Xcode Command Line Tools (`xcode-select --install`), a development Python 3.11 or later, and network access. Intel builds also require Yasm or NASM 2.x (for example, `brew install yasm`), plus Rosetta 2 on Apple Silicon. Intel Macs build the Intel package; use an Apple Silicon Mac for the arm64 package.
 
 ```sh
 python3 scripts/build_app.py --arch arm64
