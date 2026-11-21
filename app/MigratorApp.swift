@@ -1,45 +1,6 @@
 import SwiftUI
 import AppKit
-import Security
 import UniformTypeIdentifiers
-
-enum APICredentials {
-    static func query(_ provider: String) -> [String: Any] {
-        [kSecClass as String: kSecClassGenericPassword,
-         kSecAttrService as String: "io.github.virtuecho.img-link-migrator",
-         kSecAttrAccount as String: provider]
-    }
-    static func load(_ provider: String) throws -> String {
-        var attributes = query(provider)
-        attributes[kSecReturnData as String] = true
-        attributes[kSecMatchLimit as String] = kSecMatchLimitOne
-        var result: CFTypeRef?
-        let status = SecItemCopyMatching(attributes as CFDictionary, &result)
-        if status == errSecItemNotFound { return "" }
-        try check(status)
-        return (result as? Data).flatMap { String(data: $0, encoding: .utf8) } ?? ""
-    }
-    static func save(_ key: String, provider: String) throws {
-        let attributes = query(provider)
-        if key.isEmpty {
-            let status = SecItemDelete(attributes as CFDictionary)
-            if status != errSecItemNotFound { try check(status) }
-            return
-        }
-        let value = [kSecValueData as String: Data(key.utf8)]
-        let status = SecItemUpdate(attributes as CFDictionary, value as CFDictionary)
-        if status == errSecItemNotFound {
-            try check(SecItemAdd(attributes.merging(value) { _, new in new } as CFDictionary, nil))
-        } else {
-            try check(status)
-        }
-    }
-    static func check(_ status: OSStatus) throws {
-        guard status != errSecSuccess else { return }
-        throw NSError(domain: NSOSStatusErrorDomain, code: Int(status),
-                      userInfo: [NSLocalizedDescriptionKey: SecCopyErrorMessageString(status, nil) as String? ?? "Keychain error \(status)"])
-    }
-}
 
 struct ImageRow: Identifiable {
     var id: String { url }
@@ -96,8 +57,9 @@ struct LocalUploadRow: Identifiable {
     @Published var apiKey = "" {
         didSet {
             guard !loadingKey else { return }
-            do { try APICredentials.save(apiKey.trimmingCharacters(in: .whitespacesAndNewlines), provider: provider) }
-            catch { status = "Cannot save API key to Keychain: \(error.localizedDescription)" }
+            let key = apiKey.trimmingCharacters(in: .whitespacesAndNewlines)
+            if key.isEmpty { UserDefaults.standard.removeObject(forKey: apiKeyDefaultsKey) }
+            else { UserDefaults.standard.set(key, forKey: apiKeyDefaultsKey) }
         }
     }
     @Published var mode = "size_limit"
@@ -117,6 +79,7 @@ struct LocalUploadRow: Identifiable {
     @Published var total = 0
     private var scannedSignature = ""
     private var loadingKey = false
+    private var apiKeyDefaultsKey: String { "apiKey.\(provider)" }
     private var process: Process?
     private var input: FileHandle?
     private var outputBuffer = Data()
@@ -131,8 +94,7 @@ struct LocalUploadRow: Identifiable {
     func loadAPIKey() {
         loadingKey = true
         defer { loadingKey = false }
-        do { apiKey = try APICredentials.load(provider) }
-        catch { apiKey = ""; status = "Cannot read API key from Keychain: \(error.localizedDescription)" }
+        apiKey = UserDefaults.standard.string(forKey: apiKeyDefaultsKey) ?? ""
     }
 
     var settings: [String: Any] {
@@ -555,7 +517,7 @@ struct MigratorView: View {
                     }
                     Text("API key")
                     SecureField("Enter your \(model.provider == "imgbb" ? "ImgBB" : "PicGo.net") API key", text: $model.apiKey)
-                    Text("Saved in macOS Keychain for future launches.").font(.caption).foregroundStyle(.secondary)
+                    Text("Saved unencrypted in local app preferences.").font(.caption).foregroundStyle(.secondary)
                 }
                 VStack(alignment: .leading) {
                     Picker("Image mode", selection: $model.mode) {

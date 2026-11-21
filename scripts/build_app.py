@@ -14,7 +14,7 @@ import os
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 BUILD = ROOT / "build"
 DIST = ROOT / "dist"
-VERSION = "1.1.1"
+VERSION = "1.2.0"
 PYTHON_RELEASE = "20261003"
 PYTHON_VERSION = "3.13.16"
 PYTHON_HASHES = {
@@ -145,13 +145,13 @@ def build(architecture, identity=None, notary_profile=None):
         shutil.copy2(codecs / name, internal / name)
     shutil.copytree(codecs / "Licenses", licenses / "libavif")
     run(["xcrun", "swiftc", "-parse-as-library", "-O", "-target", architecture + "-apple-macosx13.0",
-         ROOT / "app/MigratorApp.swift", "-o", executable, "-framework", "SwiftUI", "-framework", "AppKit", "-framework", "Security"])
+         ROOT / "app/MigratorApp.swift", "-o", executable, "-framework", "SwiftUI", "-framework", "AppKit"])
     info = {
         "CFBundleName": "IMG Link Migrator", "CFBundleDisplayName": "IMG Link Migrator",
         "CFBundleIdentifier": "io.github.virtuecho.img-link-migrator",
         "CFBundleDevelopmentRegion": "en", "CFBundleLocalizations": ["en"],
         "CFBundleExecutable": "IMG Link Migrator", "CFBundlePackageType": "APPL",
-        "CFBundleShortVersionString": VERSION, "CFBundleVersion": "3",
+        "CFBundleShortVersionString": VERSION, "CFBundleVersion": "4",
         "LSMinimumSystemVersion": "13.0", "NSHighResolutionCapable": True,
         "LSApplicationCategoryType": "public.app-category.utilities",
         "NSPrincipalClass": "NSApplication",

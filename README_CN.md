@@ -10,8 +10,8 @@
 
 | 安装包 | 适用设备 |
 | --- | --- |
-| `IMG-Link-Migrator-1.1.1-arm64.zip` | Apple Silicon，M1 及后续芯片 |
-| `IMG-Link-Migrator-1.1.1-x86_64.zip` | Intel Mac |
+| `IMG-Link-Migrator-1.2.0-arm64.zip` | Apple Silicon，M1 及后续芯片 |
+| `IMG-Link-Migrator-1.2.0-x86_64.zip` | Intel Mac |
 
 解压后，将 `IMG Link Migrator.app` 拖进「应用程序」。
 
@@ -33,7 +33,7 @@
 | 选项 | 默认值／行为 |
 | --- | --- |
 | Upload to | ImgBB 或 PicGo.net；默认 ImgBB |
-| API key | 在应用密码式输入框填写；保存在 macOS 钥匙串 |
+| API key | 在遮挡输入框填写；未加密保存在本机应用偏好设置 |
 | Image mode | Size Limit |
 | Back up documents | 开启 |
 | Include domains | `xhscdn`，匹配域名中含该关键词的链接；清空即包含全部符合条件的域名；逗号分隔 |
@@ -46,7 +46,7 @@
 | Retry Failed | 重试当前域名选择中的失败图片 |
 | Stop | 不再开始新图片，当前操作到安全位置后结束 |
 
-开始迁移前填写所选平台的 key。ImgBB 和 PicGo.net 的 key 分别保存在 macOS 钥匙串，打开应用或切换平台时自动读取。应用记住上次选择的平台；清空输入框会删除该平台保存的 key。后端在活动消息中隐藏当前 key。
+上传前填写所选平台的 key。ImgBB 和 PicGo.net 的 key 分别以未加密形式保存在本机应用偏好设置中，打开应用或切换平台时自动读取。应用记住上次选择的平台；清空输入框会删除该平台保存的 key。后端在活动消息中隐藏当前 key。
 
 ## 图片处理规则
 

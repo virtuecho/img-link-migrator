@@ -10,8 +10,8 @@ Requires macOS 13 or later. Choose the **single-architecture** download for your
 
 | Download | Mac |
 | --- | --- |
-| `IMG-Link-Migrator-1.1.1-arm64.zip` | Apple Silicon: M1 and later |
-| `IMG-Link-Migrator-1.1.1-x86_64.zip` | Intel |
+| `IMG-Link-Migrator-1.2.0-arm64.zip` | Apple Silicon: M1 and later |
+| `IMG-Link-Migrator-1.2.0-x86_64.zip` | Intel |
 
 Unzip and drag `IMG Link Migrator.app` to Applications.
 
@@ -33,7 +33,7 @@ Images are recognized in inline Markdown, referenced Markdown images whose defin
 | Option | Default / behavior |
 | --- | --- |
 | Upload to | ImgBB or PicGo.net; default ImgBB |
-| API key | Entered in the app's secure field; saved in macOS Keychain |
+| API key | Entered in a masked field; saved unencrypted in local app preferences |
 | Image mode | Size Limit |
 | Back up documents | Enabled |
 | Include domains | `xhscdn`: match host names containing this keyword; clear to include all eligible domains; comma-separated |
@@ -46,7 +46,7 @@ Images are recognized in inline Markdown, referenced Markdown images whose defin
 | Retry Failed | Retry failed images selected by the current domain filters |
 | Stop | Stop starting new images; finish the current operation at a safe point |
 
-Enter the key for the selected platform before starting migration. ImgBB and PicGo.net keys are stored separately in macOS Keychain and restored when the app opens or the platform changes. The last selected platform is remembered. Clearing the key field removes that platform's saved key. The backend redacts the current key from activity messages.
+Enter the key for the selected platform before uploading. ImgBB and PicGo.net keys are stored separately and unencrypted in the app's local macOS preferences, and restored when the app opens or the platform changes. The last selected platform is remembered. Clearing the key field removes that platform's saved key. The backend redacts the current key from activity messages.
 
 ## Image rules
 
