@@ -14,7 +14,21 @@ import os
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 BUILD = ROOT / "build"
 DIST = ROOT / "dist"
-VERSION = "1.2.0"
+VERSION = "1.2.3"
+ICON_SOURCE = ROOT / "assets/app-icon.png"
+# Monterey/Sonoma's macOS HIG layout guide places the icon grid at about 80% of the 1024 px canvas.
+ICON_FILES = {
+    "icon_16x16.png": 16,
+    "icon_16x16@2x.png": 32,
+    "icon_32x32.png": 32,
+    "icon_32x32@2x.png": 64,
+    "icon_128x128.png": 128,
+    "icon_128x128@2x.png": 256,
+    "icon_256x256.png": 256,
+    "icon_256x256@2x.png": 512,
+    "icon_512x512.png": 512,
+    "icon_512x512@2x.png": 1024,
+}
 PYTHON_RELEASE = "20261003"
 PYTHON_VERSION = "3.13.16"
 PYTHON_HASHES = {
@@ -44,6 +58,38 @@ def download(url, path, digest=None):
     if digest and hashlib.sha256(path.read_bytes()).hexdigest() != digest:
         path.unlink()
         raise RuntimeError("Downloaded archive checksum mismatch: " + path.name)
+
+
+def build_icon(resources, python):
+    iconset = BUILD / "IMG Link Migrator.iconset"
+    shutil.rmtree(iconset, ignore_errors=True)
+    iconset.mkdir()
+    rounded_icon = BUILD / "IMG Link Migrator.png"
+    mask_script = """
+from PIL import Image, ImageChops, ImageDraw
+import sys
+canvas_size = 1024
+body_size = 824
+margin = (canvas_size - body_size) // 2
+# The archived HIG grid's rounded corner spans about 18.7% of the icon body.
+scale = 4
+mask = Image.new("L", (body_size * scale, body_size * scale))
+ImageDraw.Draw(mask).rounded_rectangle(
+    (0, 0, body_size * scale - 1, body_size * scale - 1),
+    radius=round(body_size * 0.187 * scale), fill=255)
+mask = mask.resize((body_size, body_size), Image.Resampling.LANCZOS)
+art = Image.open(sys.argv[1]).convert("RGBA").resize(
+    (body_size, body_size), Image.Resampling.LANCZOS)
+art.putalpha(ImageChops.multiply(art.getchannel("A"), mask))
+canvas = Image.new("RGBA", (canvas_size, canvas_size))
+canvas.alpha_composite(art, (margin, margin))
+canvas.save(sys.argv[2])
+"""
+    run([python, "-c", mask_script, ICON_SOURCE, rounded_icon])
+    for name, size in ICON_FILES.items():
+        run(["sips", "-z", size, size, rounded_icon, "--out", iconset / name],
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    run(["iconutil", "-c", "icns", "--output", resources / "AppIcon.icns", iconset])
 
 
 def build_codecs(architecture, python):
@@ -151,13 +197,15 @@ def build(architecture, identity=None, notary_profile=None):
         "CFBundleIdentifier": "io.github.virtuecho.img-link-migrator",
         "CFBundleDevelopmentRegion": "en", "CFBundleLocalizations": ["en"],
         "CFBundleExecutable": "IMG Link Migrator", "CFBundlePackageType": "APPL",
-        "CFBundleShortVersionString": VERSION, "CFBundleVersion": "4",
+        "CFBundleShortVersionString": VERSION, "CFBundleVersion": "9",
+        "CFBundleIconFile": "AppIcon.icns",
         "LSMinimumSystemVersion": "13.0", "NSHighResolutionCapable": True,
         "LSApplicationCategoryType": "public.app-category.utilities",
         "NSPrincipalClass": "NSApplication",
     }
     with (contents / "Info.plist").open("wb") as output:
         plistlib.dump(info, output)
+    build_icon(resources, python)
     for name in ("README.md", "README_CN.md", "LICENSE", "THIRD_PARTY.md"):
         shutil.copy2(ROOT / name, resources / name)
     for distribution in site.glob("*.dist-info"):
@@ -182,7 +230,7 @@ def build(architecture, identity=None, notary_profile=None):
     # App-only sources make replacement/rebuilding of LGPL-linked components practical.
     sources = resources / "Source"
     sources.mkdir()
-    for name in ("img_link_migrator.py", "image_processing.py", "app/backend.py", "app/MigratorApp.swift", "app/HDRDecode.swift", "scripts/build_app.py", "pyproject.toml", "README.md", "README_CN.md", "LICENSE", "THIRD_PARTY.md"):
+    for name in ("img_link_migrator.py", "image_processing.py", "app/backend.py", "app/MigratorApp.swift", "app/HDRDecode.swift", "scripts/build_app.py", "assets/app-icon.png", "pyproject.toml", "README.md", "README_CN.md", "LICENSE", "THIRD_PARTY.md"):
         target = sources / name
         target.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(ROOT / name, target)
@@ -202,6 +250,10 @@ def build(architecture, identity=None, notary_profile=None):
         run(["xcrun", "stapler", "staple", destination])
         package.unlink()
         run(["ditto", "-c", "-k", "--sequesterRsrc", "--keepParent", destination, package])
+    if architecture == platform.machine():
+        local_app = DIST / "IMG Link Migrator.app"
+        shutil.rmtree(local_app, ignore_errors=True)
+        run(["ditto", destination, local_app])
     print(f"Built {package} ({package.stat().st_size / 1_000_000:.1f} MB)", flush=True)
 
 

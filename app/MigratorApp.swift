@@ -421,7 +421,18 @@ struct MigratorView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             HStack {
-                Image(systemName: "photo.on.rectangle.angled").font(.largeTitle).foregroundStyle(.tint)
+                Group {
+                    if let icon = NSApp.applicationIconImage {
+                        Image(nsImage: icon)
+                            .resizable()
+                            .interpolation(.high)
+                            .scaledToFit()
+                            .frame(width: 52, height: 52)
+                    } else {
+                        Image(systemName: "photo.on.rectangle.angled").font(.largeTitle).foregroundStyle(.tint)
+                    }
+                }
+                .accessibilityHidden(true)
                 VStack(alignment: .leading) {
                     Text("IMG Link Migrator").font(.title2.bold())
                     Text("Upload local images or migrate links in Markdown and text files.").foregroundStyle(.secondary)

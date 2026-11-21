@@ -10,8 +10,8 @@
 
 | 安装包 | 适用设备 |
 | --- | --- |
-| `IMG-Link-Migrator-1.2.0-arm64.zip` | Apple Silicon，M1 及后续芯片 |
-| `IMG-Link-Migrator-1.2.0-x86_64.zip` | Intel Mac |
+| `IMG-Link-Migrator-1.2.3-arm64.zip` | Apple Silicon，M1 及后续芯片 |
+| `IMG-Link-Migrator-1.2.3-x86_64.zip` | Intel Mac |
 
 解压后，将 `IMG Link Migrator.app` 拖进「应用程序」。
 
