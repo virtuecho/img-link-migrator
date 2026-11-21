@@ -1,7 +1,9 @@
 """Private JSON-lines bridge between the native app and the migration core."""
 import dataclasses
 import json
+import mimetypes
 import pathlib
+import re
 import signal
 import sys
 import threading
@@ -69,6 +71,9 @@ class Service:
             signature = self.signature(config)
             action = request.get("action")
             self.secret = config.get("apiKey", "").strip()
+            if action == "upload_local":
+                self.upload_local(request.get("files", []), provider, config)
+                return
             if action == "scan":
                 self.plans = core.scan_targets(targets, include, exclude, self.scan_progress)
                 self.scan_signature = signature
@@ -105,6 +110,51 @@ class Service:
         finally:
             self.worker = None
             self.emit({"kind": "idle"})
+
+    def upload_local(self, files, provider, config):
+        if not isinstance(files, list) or not files:
+            raise core.MigrationError("Choose at least one image file.")
+        retries = int(config.get("retries", 3))
+        client = core._create_upload_client(provider, self.secret, retries, self.emit, self.cancel)
+        processor = ImageProcessor(provider, config.get("mode", "size_limit"), cancel=self.cancel)
+        uploaded = failed = cancelled = completed = 0
+        total = len(files)
+        for current, raw_path in enumerate(files, 1):
+            path = pathlib.Path(raw_path) if isinstance(raw_path, str) else pathlib.Path()
+            status, new_url, message = "failed", "", ""
+            self.emit({"kind": "local_file_start", "path": str(path), "current": current, "total": total})
+            try:
+                if self.cancel.is_set():
+                    raise core.CancelledError("Task cancelled.")
+                if not isinstance(raw_path, str) or not path.is_file():
+                    raise core.MigrationError("File is missing or is not a regular file.")
+                if path.stat().st_size > core.MAX_IMAGE_BYTES:
+                    raise core.MigrationError("Image exceeds the 100 MB file limit.")
+                data = path.read_bytes()
+                if len(data) > core.MAX_IMAGE_BYTES:
+                    raise core.MigrationError("Image exceeds the 100 MB file limit.")
+                content_type = mimetypes.guess_type(path.name)[0] or "application/octet-stream"
+                prepared = processor.prepare(data, path.name, content_type)
+                suffix = pathlib.Path(prepared.filename).suffix.lower()
+                if not re.fullmatch(r"\.[a-z0-9]{1,10}", suffix):
+                    suffix = mimetypes.guess_extension(prepared.content_type) or ".img"
+                stem = re.sub(r"[^0-9A-Za-z._-]+", "-", path.stem).strip("-._") or "image"
+                filename = stem[:80] + suffix
+                self.emit({"kind": "local_image_prepared", "path": str(path), **prepared.detail})
+                new_url = client.upload(prepared.data, prepared.content_type, filename, str(path))
+                status, message = "uploaded", "Upload succeeded."
+                uploaded += 1
+            except core.CancelledError:
+                status, message = "cancelled", "Upload stopped."
+                cancelled += 1
+            except Exception as exc:
+                message = str(exc)
+                failed += 1
+            completed += 1
+            self.emit({"kind": "local_file_done", "path": str(path), "status": status,
+                       "new_url": new_url, "message": message, "current": completed, "total": total})
+        self.emit({"kind": "local_upload_done", "uploaded": uploaded, "failed": failed,
+                   "cancelled": cancelled or (total - completed)})
 
 
 def self_check():

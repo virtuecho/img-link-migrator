@@ -2,7 +2,7 @@
 
 [中文说明](README_CN.md)
 
-A native macOS app that optimizes externally linked images, uploads them to ImgBB or PicGo.net, and replaces the links in Markdown and text documents. The app bundles its Python runtime and image codecs.
+A native macOS app that uploads local images and migrates externally linked images to ImgBB or PicGo.net, replacing links in Markdown and text documents. The app bundles its Python runtime and image codecs.
 
 ## Install
 
@@ -23,6 +23,8 @@ Unzip and drag `IMG Link Migrator.app` to Applications.
 4. Click **Scan**. Review the files, image URLs, counts, and source domains, then uncheck domains to skip.
 5. Click **Start Migration**. In confirmation dialogs, **Return accepts** and **Escape cancels**.
 6. Review status and image properties. Sort with column headers or **Sort by**. Drag the divider below the list to resize its height, and column borders to resize widths. Select text to copy, use **Copy All**, or right-click a row to copy its details. Advanced Options can still be expanded during uploads.
+
+To upload local images without editing documents, add or drop images into **Upload local images**, then click **Upload Images**. Copy each returned URL or all successful URLs from that panel.
 
 Images are recognized in inline Markdown, referenced Markdown images whose definitions are used, and HTML `<img>` tags. Bare image URLs are recognized only in `.txt` files. Frontmatter, fenced code blocks, and inline code are skipped. The app preserves existing link text and document structure.
 

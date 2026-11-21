@@ -76,6 +76,15 @@ struct ImageRow: Identifiable {
     }
 }
 
+struct LocalUploadRow: Identifiable {
+    var id: String { path }
+    let path: String
+    var status = "Pending"
+    var detail = ""
+    var newURL = ""
+    var filename: String { URL(fileURLWithPath: path).lastPathComponent }
+}
+
 @MainActor final class MigratorModel: ObservableObject {
     @Published var targets: [String] = []
     @Published var provider = "imgbb" {
@@ -98,6 +107,7 @@ struct ImageRow: Identifiable {
     @Published var backup = true
     @Published var stateDir = ""
     @Published var rows: [ImageRow] = []
+    @Published var localRows: [LocalUploadRow] = []
     @Published var disabledHosts: Set<String> = []
     @Published var busy = false
     @Published var stopping = false
@@ -135,6 +145,7 @@ struct ImageRow: Identifiable {
         [targets.joined(separator: "\n"), provider, includeHosts, excludeHosts].joined(separator: "\u{0}")
     }
     var canMigrate: Bool { !busy && !apiKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && !rows.isEmpty && scannedSignature == signature && !selectedURLs.isEmpty }
+    var canUploadLocal: Bool { !busy && !apiKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && !localRows.isEmpty }
     var selectedURLs: [String] { rows.filter { !disabledHosts.contains($0.host) }.map(\.url) }
     var domains: [String] { Array(Set(rows.map(\.host))).sorted() }
     var failedURLs: [String] { rows.filter { $0.status == "Failed" && !disabledHosts.contains($0.host) }.map(\.url) }
@@ -142,6 +153,42 @@ struct ImageRow: Identifiable {
     func add(_ paths: [String]) {
         guard !busy else { return }
         targets = Array(Set(targets + paths)).sorted()
+    }
+    func addLocalImages(_ paths: [String]) {
+        guard !busy else { return }
+        for path in paths {
+            let url = URL(fileURLWithPath: path)
+            guard UTType(filenameExtension: url.pathExtension)?.conforms(to: .image) == true,
+                  !localRows.contains(where: { $0.path == path }) else { continue }
+            localRows.append(LocalUploadRow(path: path))
+        }
+        if localRows.isEmpty { status = "Choose image files to upload." }
+    }
+    func chooseLocalImages() {
+        let panel = NSOpenPanel()
+        panel.canChooseDirectories = false
+        panel.canChooseFiles = true
+        panel.allowsMultipleSelection = true
+        panel.allowedContentTypes = [.image]
+        if panel.runModal() == .OK { addLocalImages(panel.urls.map(\.path)) }
+    }
+    func uploadLocalImages() {
+        guard canUploadLocal else { return }
+        let count = localRows.count
+        if confirm("Upload local images?", "Upload \(count) image(s) to \(provider == "imgbb" ? "ImgBB" : "PicGo.net"). No documents will be changed.", accept: "Upload") {
+            send("upload_local", files: localRows.map(\.path))
+        }
+    }
+    func clearLocalImages() {
+        guard !busy else { return }
+        localRows = []
+    }
+    func copyLocalURL(_ url: String) {
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(url, forType: .string)
+    }
+    func copyLocalURLs() {
+        copyLocalURL(localRows.map(\.newURL).filter { !$0.isEmpty }.joined(separator: "\n"))
     }
     func chooseTargets() {
         let panel = NSOpenPanel()
@@ -243,15 +290,15 @@ struct ImageRow: Identifiable {
         process = task
         input = incoming.fileHandleForWriting
     }
-    func send(_ action: String, urls: [String] = []) {
+    func send(_ action: String, urls: [String] = [], files: [String] = []) {
         do {
             try startBackend()
             busy = true
             stopping = false
             completed = 0
-            total = urls.count
-            status = action == "scan" ? "Scanning documents…" : "Processing images…"
-            write(["action": action, "settings": settings, "selectedURLs": urls])
+            total = action == "upload_local" ? files.count : urls.count
+            status = action == "scan" ? "Scanning documents…" : action == "upload_local" ? "Uploading local images…" : "Processing images…"
+            write(["action": action, "settings": settings, "selectedURLs": urls, "files": files])
         } catch { busy = false; status = "Cannot start engine: \(error.localizedDescription)" }
     }
     func write(_ request: [String: Any]) {
@@ -308,6 +355,33 @@ struct ImageRow: Identifiable {
                 rows[i].detail += (rows[i].detail.isEmpty ? "" : " · ") + message
             }
             completed = event["current"] as? Int ?? completed
+        case "local_file_start":
+            let path = event["path"] as? String ?? ""
+            if let i = localRows.firstIndex(where: { $0.path == path }) {
+                localRows[i].status = "Processing"
+                localRows[i].detail = ""
+                localRows[i].newURL = ""
+            }
+            total = event["total"] as? Int ?? total
+            status = "Uploading image \(event["current"] as? Int ?? 0) of \(total)…"
+        case "local_image_prepared":
+            let path = event["path"] as? String ?? ""
+            if let i = localRows.firstIndex(where: { $0.path == path }) {
+                let size = ByteCountFormatter.string(fromByteCount: Int64(event["bytes"] as? Int ?? 0), countStyle: .file)
+                localRows[i].detail = "\(event["format"] as? String ?? "image") · \(size)"
+                if let warning = event["warning"] as? String { appendLog(warning) }
+            }
+        case "local_file_done":
+            let path = event["path"] as? String ?? ""
+            if let i = localRows.firstIndex(where: { $0.path == path }) {
+                localRows[i].status = (event["status"] as? String ?? "failed").capitalized
+                localRows[i].newURL = event["new_url"] as? String ?? ""
+                localRows[i].detail = message
+            }
+            completed = event["current"] as? Int ?? completed
+        case "local_upload_done":
+            let cancelled = event["cancelled"] as? Int ?? 0
+            status = "\(cancelled > 0 ? "Stopped" : "Finished"): \(event["uploaded"] as? Int ?? 0) uploaded, \(event["failed"] as? Int ?? 0) failed, \(cancelled) cancelled."
         case "done":
             let r = event["summary"] as? [String: Any] ?? [:]
             status = "\((r["cancelled"] as? Bool ?? false) ? "Stopped" : "Finished"): \(r["uploaded_urls"] as? Int ?? 0) uploaded, \(r["cached_urls"] as? Int ?? 0) cached, \(r["failed_urls"] as? Int ?? 0) failed; \(r["updated_files"] as? Int ?? 0) files updated."
@@ -388,39 +462,90 @@ struct MigratorView: View {
                 Image(systemName: "photo.on.rectangle.angled").font(.largeTitle).foregroundStyle(.tint)
                 VStack(alignment: .leading) {
                     Text("IMG Link Migrator").font(.title2.bold())
-                    Text("Optimize images and migrate links in Markdown and text files.").foregroundStyle(.secondary)
+                    Text("Upload local images or migrate links in Markdown and text files.").foregroundStyle(.secondary)
                 }
                 Spacer()
             }
-            GroupBox("Documents and folders") {
-                VStack(alignment: .leading) {
-                    HStack {
-                        Button("Add Files or Folders…") { model.chooseTargets() }
-                        Button("Clear") { model.targets = [] }.disabled(model.targets.isEmpty)
-                        Spacer()
-                        Text("Drop files or folders here").foregroundStyle(.secondary)
-                    }
-                    ScrollView {
-                        VStack(alignment: .leading, spacing: 3) {
-                            ForEach(model.targets, id: \.self) { path in
-                                HStack {
-                                    Text(path).lineLimit(1).truncationMode(.middle).help(path)
-                                    Spacer()
-                                    Button { model.targets.removeAll { $0 == path } } label: { Image(systemName: "xmark") }.buttonStyle(.plain)
+            HStack(alignment: .top, spacing: 12) {
+                GroupBox("Documents and folders") {
+                    VStack(alignment: .leading) {
+                        HStack {
+                            Button("Add Files or Folders…") { model.chooseTargets() }
+                            Button("Clear") { model.targets = [] }.disabled(model.targets.isEmpty)
+                            Spacer()
+                            Text("Drop files or folders here").foregroundStyle(.secondary).lineLimit(1)
+                        }
+                        ScrollView {
+                            VStack(alignment: .leading, spacing: 3) {
+                                ForEach(model.targets, id: \.self) { path in
+                                    HStack {
+                                        Text(path).lineLimit(1).truncationMode(.middle).help(path)
+                                        Spacer()
+                                        Button { model.targets.removeAll { $0 == path } } label: { Image(systemName: "xmark") }.buttonStyle(.plain)
+                                    }
                                 }
-                            }
-                        }.frame(maxWidth: .infinity, alignment: .leading)
-                    }.frame(height: 60)
-                }.padding(4)
-            }.disabled(model.busy)
-            .onDrop(of: [.fileURL], isTargeted: nil) { providers in
-                guard !model.busy else { return false }
-                for provider in providers {
-                    _ = provider.loadObject(ofClass: URL.self) { url, _ in
-                        if let url { Task { @MainActor in model.add([url.path]) } }
+                            }.frame(maxWidth: .infinity, alignment: .leading)
+                        }.frame(height: 60)
                     }
+                    .padding(4)
                 }
-                return true
+                .frame(maxWidth: .infinity, alignment: .topLeading)
+                .disabled(model.busy)
+                .onDrop(of: [.fileURL], isTargeted: nil) { providers in
+                    guard !model.busy else { return false }
+                    for provider in providers {
+                        _ = provider.loadObject(ofClass: URL.self) { url, _ in
+                            if let url { Task { @MainActor in model.add([url.path]) } }
+                        }
+                    }
+                    return true
+                }
+                GroupBox("Upload local images") {
+                    VStack(alignment: .leading, spacing: 6) {
+                        HStack {
+                            Button("Add Images…") { model.chooseLocalImages() }
+                            Button("Clear") { model.clearLocalImages() }.disabled(model.localRows.isEmpty)
+                            Spacer()
+                            Text("Drop images here").foregroundStyle(.secondary).lineLimit(1)
+                        }
+                        ScrollView {
+                            VStack(alignment: .leading, spacing: 3) {
+                                ForEach(model.localRows) { row in
+                                    HStack(spacing: 6) {
+                                        VStack(alignment: .leading, spacing: 2) {
+                                            Text(row.filename).lineLimit(1).help(row.path)
+                                            Text("\(row.status) · \(row.newURL.isEmpty ? row.detail : row.newURL)")
+                                                .font(.caption).foregroundStyle(row.status == "Failed" ? .red : .secondary)
+                                                .lineLimit(1).help(row.newURL.isEmpty ? row.detail : row.newURL)
+                                        }
+                                        Spacer(minLength: 0)
+                                        if !row.newURL.isEmpty {
+                                            Button { model.copyLocalURL(row.newURL) } label: { Image(systemName: "doc.on.doc") }
+                                                .buttonStyle(.plain).help("Copy image URL")
+                                        }
+                                    }
+                                }
+                            }.frame(maxWidth: .infinity, alignment: .leading)
+                        }.frame(height: 60)
+                        HStack {
+                            Button("Upload Images") { model.uploadLocalImages() }.disabled(!model.canUploadLocal)
+                            Spacer()
+                            Button("Copy URLs") { model.copyLocalURLs() }
+                                .disabled(!model.localRows.contains { !$0.newURL.isEmpty })
+                        }
+                    }.padding(4)
+                }
+                .frame(maxWidth: .infinity, alignment: .topLeading)
+                .disabled(model.busy)
+                .onDrop(of: [.fileURL], isTargeted: nil) { providers in
+                    guard !model.busy else { return false }
+                    for provider in providers {
+                        _ = provider.loadObject(ofClass: URL.self) { url, _ in
+                            if let url { Task { @MainActor in model.addLocalImages([url.path]) } }
+                        }
+                    }
+                    return true
+                }
             }
             HStack(alignment: .top, spacing: 20) {
                 VStack(alignment: .leading) {
